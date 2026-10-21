@@ -113,6 +113,8 @@ def main():
         if s.get("epsG") is not None and abs(s["epsG"]) > 300:
             notes.append(f"[극단값] {tag}: EPS 증가율 {s['epsG']}% (전년 동기 이익이 작아 생긴 착시 가능, 점수 반영은 150%로 상한)")
 
+    if len(diffs) < len(stocks) * 0.5:  # 네트워크 장애 등으로 대조가 거의 안 됐으면 '통과'로 보이지 않게
+        issues.insert(0, f"[대조 실패] 현재가를 {len(diffs)}/{len(stocks)}종목만 대조 — 인터넷 연결 또는 출처 접속 문제, 데이터 신뢰 불가")
     miss = {k: sum(1 for s in stocks if s.get(k) is None) for k in ("per", "fper", "pbr", "roe", "opm", "debt", "epsG", "revG", "target", "rec")}
     diffs.sort()
     kr, us = sum(s["market"] == "KR" for s in stocks), sum(s["market"] == "US" for s in stocks)

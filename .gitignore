@@ -10,3 +10,6 @@ app/verify.js
 app/detail/
 tools/verify_report.txt
 *.tmp
+# 직원 안내 자료 등 공개 저장소에 올리지 않을 문서
+*.pptx
+*.pdf

@@ -260,7 +260,7 @@ input{font:inherit}
 }
 
 /* ── v3 ── */
-.actions{grid-template-columns:repeat(5,1fr);gap:6px}
+.actions{grid-template-columns:repeat(4,1fr);gap:6px}
 .actions button{flex-direction:column;gap:4px;padding:10px 2px;font-size:11px}
 .actions button.on{color:var(--brand);box-shadow:inset 0 0 0 1.5px var(--brand)}
 .digest{display:flex;gap:10px;align-items:center;background:var(--line-2);border-radius:12px;padding:12px}

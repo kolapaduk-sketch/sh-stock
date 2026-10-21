@@ -27,7 +27,6 @@ function neededDetails() {
   if (state.view === "buy") return [state.buy];
   if (state.view === "sell") return [state.sell];
   if (state.view === "my" && state.myTab === "cmp") return state.cmp;
-  if (state.view === "my" && state.myTab === "pf") return (curPf()?.holdings || []).map(h => h.code);
   return [];
 }
 function ensureDetails() {
@@ -43,11 +42,9 @@ const SCR_DEFAULT = { market: "all", sector: "", perMax: "", roeMin: "", divMin:
 const state = {
   view: "home", buy: null, sell: null, mode: "similar", period: "3M",
   homeMkt: "all", altMkt: "all", briefMkt: "KR", scr: { ...SCR_DEFAULT },
-  myTab: "pf", logQ: "", calScope: "mine", perfMkt: "all", perfBase: null, pfSim: null, pfSimAlt: 0,
-  pfs: store.get("pfs", []), pfSel: store.get("pfSel", null),
+  myTab: "cmp", calScope: "mine", perfMkt: "all", perfBase: null,
   watch: new Set(store.get("watch", [])),
   cmp: store.get("cmp", []).filter(c => byCode[c]),
-  logs: store.get("logs", []),
 };
 
 /* ── formatters ── */
@@ -188,7 +185,6 @@ const PICKERS = {
   "q-buy": c => { state.buy = c; render(); window.scrollTo(0, 0); },
   "q-sell": c => { state.sell = c; render(); window.scrollTo(0, 0); },
   "q-cmp": c => addCompare(c),
-  "q-pf": c => pfAdd(c),
 };
 
 const disclaimer = `<div class="disc"><b>투자 유의사항</b> · 본 화면의 점수·추천·뉴스 요약은 공개 데이터(Yahoo Finance·네이버 증권, ${DATA_ASOF} 수집)에 룰 기반 지표를 적용한 참고 정보이며 투자 권유가 아닙니다. 데이터는 실시간이 아니고 오류가 있을 수 있습니다. 투자 판단과 결과의 책임은 투자자 본인에게 있습니다.</div>`;
@@ -237,7 +233,6 @@ function briefCard() {
 }
 
 /* ── 홈 ── */
-function dueLogs() { const t = today(); return state.logs.filter(l => l.next && l.next <= t && !l.done); }
 function viewHome() {
   const pool = Engine.ranked().filter(o => state.homeMkt === "all" || o.s.market === state.homeMkt);
   const secs = [...new Set(pool.map(o => o.s.sector))].map(sec => {
@@ -245,10 +240,8 @@ function viewHome() {
     return { sec, n: g.length, r: g.reduce((a, s) => a + s.r1m, 0) / g.length };
   }).sort((a, b) => b.r - a.r);
   const heatCol = r => { const a = Math.min(Math.abs(r) / 10, 1) * .75 + .25; return r >= 0 ? `rgba(229,50,45,${a})` : `rgba(30,100,216,${a})`; };
-  const due = dueLogs();
   return `
   ${briefCard()}
-  ${due.length ? `<button class="due" data-act="myt" data-arg="log"><b>연락 예정 ${due.length}건</b><span>${due.slice(0, 2).map(l => esc(l.client)).join(", ")}${due.length > 2 ? " 외" : ""} — 상담 이력 보기 ›</span></button>` : ""}
   <div class="hero hero-sm">
     <div class="hero-btns" style="margin-top:0">
       <button class="hero-btn pri" data-act="go" data-arg="buy"><b>매수 분석</b><span>종목 추천 사유 보기</span></button>
@@ -318,7 +311,6 @@ function viewBuy() {
   h += stockHead(s);
   h += `<div class="actions noprint">
     <button data-act="copy" data-arg="${s.code}">${ic("copy")}<span>요약 복사</span></button>
-    <button data-act="logadd" data-arg="${s.code}">${ic("note")}<span>상담 기록</span></button>
     <button data-act="cmpadd" data-arg="${s.code}" class="${inCmp ? "on" : ""}">${ic("cmp")}<span>${inCmp ? "비교 중" : "비교 담기"}</span></button>
     <button data-act="print">${ic("print")}<span>인쇄·PDF</span></button>
     <button data-act="sell" data-arg="${s.code}">${ic("swap")}<span>교체 추천</span></button>
@@ -558,93 +550,6 @@ function compareText() {
   return L.join("\n");
 }
 
-/* ── MY: 상담 이력 ── */
-const LOG_TYPES = ["매수 상담", "매도 상담", "교체 상담", "포트폴리오 점검", "일반 문의"];
-const LOG_REACT = ["관심", "검토 중", "보류", "매수 결정", "매도 결정", "거절"];
-function saveLogs() { store.set("logs", state.logs); }
-function openLogForm(code = "", id = null, client = "") {
-  const e = id ? state.logs.find(l => l.id === id) : (client ? { client } : null);
-  const editing = !!(id && e);
-  const sel = e ? e.code : code;
-  const opts = [...STOCKS].sort((a, b) => a.name.localeCompare(b.name, "ko")).map(s => `<option value="${s.code}" ${s.code === sel ? "selected" : ""}>${s.name} (${s.code})</option>`).join("");
-  $("#sheet").innerHTML = `<div class="sheet-bg" data-act="sheetclose"></div><div class="sheet-p">
-    <div class="sheet-h"><b>${editing ? "상담 기록 수정" : "상담 기록"}</b><button data-act="sheetclose">✕</button></div>
-    <p class="sheet-d">기록은 이 기기의 브라우저에만 저장됩니다. 주민번호·계좌번호·연락처 등 민감한 개인정보는 입력하지 마세요.</p>
-    <div class="fgrid2">
-      <label class="fld"><span>고객 (이름·별칭)*</span><input id="lf-client" maxlength="30" value="${esc(e?.client || "")}" placeholder="예: 김OO 고객"></label>
-      <label class="fld"><span>상담일</span><input id="lf-date" type="date" value="${e?.date || today()}"></label>
-      <label class="fld"><span>구분</span><select id="lf-type">${LOG_TYPES.map(t => `<option ${e?.type === t ? "selected" : ""}>${t}</option>`).join("")}</select></label>
-      <label class="fld"><span>고객 반응</span><select id="lf-react">${LOG_REACT.map(t => `<option ${e?.react === t ? "selected" : ""}>${t}</option>`).join("")}</select></label>
-    </div>
-    <label class="fld" style="margin-top:8px"><span>관련 종목</span><select id="lf-code"><option value="">(종목 없음)</option>${opts}</select></label>
-    <label class="fld" style="margin-top:8px"><span>메모</span><textarea id="lf-memo" rows="3" maxlength="500" placeholder="상담 내용, 고객 의견 등">${esc(e?.memo || "")}</textarea></label>
-    <label class="fld" style="margin-top:8px"><span>다음 연락일 (선택)</span><input id="lf-next" type="date" value="${e?.next || ""}"></label>
-    <button class="btn-pri" data-act="logsave" data-arg="${editing ? e.id : ""}">${editing ? "수정 저장" : "저장"}</button>
-  </div>`;
-  $("#sheet").classList.add("on");
-  setTimeout(() => $("#lf-client").focus(), 50);
-}
-function saveLogForm(id) {
-  const v = k => $("#lf-" + k).value.trim();
-  if (!v("client")) { toast("고객 이름(별칭)을 입력하세요"); $("#lf-client").focus(); return; }
-  const s = byCode[v("code")];
-  const rec = { client: v("client"), date: v("date") || today(), type: v("type"), react: v("react"), code: v("code"), memo: v("memo"), next: v("next") };
-  if (id) {
-    const e = state.logs.find(l => l.id === id);
-    if (e.code !== rec.code) Object.assign(e, { price: s ? s.price : null, score: s ? Engine.score(s).total : null });
-    Object.assign(e, rec);
-  } else {
-    state.logs.unshift({ id: Date.now().toString(36), ...rec, price: s ? s.price : null, score: s ? Engine.score(s).total : null, created: new Date().toISOString(), done: false });
-  }
-  saveLogs();
-  $("#sheet").classList.remove("on");
-  toast("상담 기록을 저장했습니다");
-  if (state.view === "my") render(); else { state.myTab = "log"; go("my"); }
-}
-function logCard(l) {
-  const s = byCode[l.code], t = today();
-  const since = s && l.price ? (s.price / l.price - 1) * 100 : null;
-  const due = l.next && !l.done ? (l.next < t ? "overdue" : l.next === t ? "today" : "") : "";
-  return `<div class="log">
-    <div class="log-h"><b>${esc(l.client)}</b><span class="badge">${esc(l.type)}</span><span class="badge react">${esc(l.react)}</span><span class="log-d">${esc(l.date)}</span></div>
-    ${s ? `<div class="log-s" data-act="buy" data-arg="${s.code}"><span>${s.name}</span><span class="num">상담 시 ${money(s, l.price)} → 현재 ${money(s, s.price)} <b class="${ud(since)}">${pc(since)}</b></span></div>` : ""}
-    ${l.memo ? `<p class="log-m">${esc(l.memo)}</p>` : ""}
-    <div class="log-f">
-      ${l.next ? `<span class="next ${due}">${l.done ? "✓ 연락 완료" : `다음 연락 ${esc(l.next)}${due === "overdue" ? " (지남)" : due === "today" ? " (오늘)" : ""}`}</span>` : "<span></span>"}
-      <span class="log-btns">${l.next && !l.done ? `<button data-act="logdone" data-arg="${l.id}">연락 완료</button>` : ""}<button data-act="logedit" data-arg="${l.id}">수정</button><button data-act="logdel" data-arg="${l.id}">삭제</button></span>
-    </div>
-  </div>`;
-}
-function viewLogs() {
-  const q = state.logQ.trim().toLowerCase();
-  const list = state.logs.filter(l => !q || l.client.toLowerCase().includes(q) || (byCode[l.code]?.name || "").toLowerCase().includes(q) || (l.memo || "").toLowerCase().includes(q))
-    .sort((a, b) => b.date.localeCompare(a.date) || b.created.localeCompare(a.created));
-  const due = dueLogs();
-  return `<div class="log-top">
-      <button class="btn-pri" data-act="logadd" data-arg="">+ 새 상담 기록</button>
-      <button class="btn-sec" data-act="csv" ${state.logs.length ? "" : "disabled"}>엑셀(CSV) 저장</button>
-    </div>
-    <div class="search"><div class="search-box"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8A94A3" stroke-width="2.2" stroke-linecap="round">${ICON.search}</svg>
-      <input id="log-q" placeholder="고객·종목·메모 검색" value="${esc(state.logQ)}" autocomplete="off"></div></div>
-    ${due.length && !q ? `<div class="card"><div class="card-h"><div class="card-t">연락 예정 ${due.length}건</div><div class="card-s">오늘까지</div></div>${due.map(logCard).join("")}</div>` : ""}
-    <div class="card"><div class="card-h"><div class="card-t">상담 이력 ${list.length}건</div><div class="card-s">최근순</div></div>
-      ${list.length ? list.map(logCard).join("") : `<div class="empty-note">${q ? "검색 결과가 없습니다" : "아직 기록이 없습니다. 매수 분석 화면의 '상담 기록' 버튼이나 위 버튼으로 추가하세요."}</div>`}
-    </div>
-    <p class="note" style="padding:0 4px">기록은 이 기기 브라우저에만 저장됩니다. 브라우저 데이터를 지우면 사라지니 주기적으로 CSV로 저장하세요.</p>`;
-}
-function exportCSV() {
-  const cell = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
-  const rows = [["상담일", "고객", "구분", "고객반응", "종목코드", "종목명", "상담시 가격", "현재가", "상담 후 수익률(%)", "상담시 점수", "메모", "다음 연락일", "연락완료"]];
-  for (const l of state.logs) {
-    const s = byCode[l.code];
-    rows.push([l.date, l.client, l.type, l.react, l.code, s?.name || "", l.price ?? "", s?.price ?? "", s && l.price ? ((s.price / l.price - 1) * 100).toFixed(2) : "", l.score ?? "", l.memo, l.next, l.done ? "Y" : ""]);
-  }
-  const blob = new Blob(["﻿" + rows.map(r => r.map(cell).join(",")).join("\r\n")], { type: "text/csv;charset=utf-8" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob); a.download = `상담이력_${today()}.csv`; a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-}
-
 /* ── MY ── */
 function viewWatch() {
   const list = [...state.watch].map(c => byCode[c]).filter(Boolean);
@@ -653,9 +558,10 @@ function viewWatch() {
 }
 function viewMy() {
   const n = v => v ? " " + v : "";
-  const tabs = [["pf", "포트폴리오" + n(state.pfs.length)], ["cmp", "종목 비교" + n(state.cmp.length)], ["log", "상담 이력" + n(state.logs.length)],
+  const tabs = [["cmp", "종목 비교" + n(state.cmp.length)],
     ["cal", "일정"], ["perf", "추천 성과"], ["watch", "관심종목" + n(state.watch.size)]];
-  const body = { pf: viewPortfolio, cmp: viewCompare, log: viewLogs, cal: viewCalendar, perf: viewPerf, watch: viewWatch }[state.myTab]();
+  if (!["cmp", "cal", "perf", "watch"].includes(state.myTab)) state.myTab = "cmp";
+  const body = { cmp: viewCompare, cal: viewCalendar, perf: viewPerf, watch: viewWatch }[state.myTab]();
   return `<div class="sec-title noprint">MY 업무</div><div class="tabs noprint">${tabs.map(([v, l]) => `<button data-act="myt" data-arg="${v}" class="${state.myTab === v ? "on" : ""}">${l}</button>`).join("")}</div>${body}`;
 }
 
@@ -665,7 +571,7 @@ function evChips(s) {
   return ev.length ? `<div class="ev-chips">${ev.map(e => `<span class="evc ${e.dday <= 7 ? "soon" : ""}">${e.type} ${e.date.slice(5).replace("-", "/")}${e.est ? "(추정)" : ""} · D-${e.dday}</span>`).join("")}</div>` : "";
 }
 function myCodes() {
-  return [...new Set([...state.watch, ...state.pfs.flatMap(p => p.holdings.map(h => h.code))])].filter(c => byCode[c]);
+  return [...state.watch].filter(c => byCode[c]);
 }
 function evRow(e) {
   return `<div class="row" data-act="buy" data-arg="${e.s.code}"><div class="ev-d ${e.dday <= 7 ? "soon" : ""}"><b>${e.dday ? "D-" + e.dday : "오늘"}</b><span>${e.date.slice(5).replace("-", "/")}</span></div>
@@ -676,7 +582,7 @@ function homeEventsCard() {
   const ev = mine.length ? Engine.events(mine, 14) : Engine.events([...STOCKS].sort((a, b) => b.mcap - a.mcap).slice(0, 60), 7);
   if (!ev.length) return "";
   return `<div class="card"><div class="card-h"><div class="card-t">다가오는 일정</div><button class="card-s link" data-act="myt" data-arg="cal">전체 보기 ›</button></div>
-    <div class="card-s" style="margin:-6px 0 4px">${mine.length ? "관심종목·고객 보유종목 · 14일 이내" : "시총 상위 60종목 · 7일 이내 (관심·보유 종목이 생기면 내 종목 기준)"}</div>
+    <div class="card-s" style="margin:-6px 0 4px">${mine.length ? "관심종목 · 14일 이내" : "시총 상위 60종목 · 7일 이내 (관심종목을 추가하면 관심종목 기준)"}</div>
     ${ev.slice(0, 5).map(evRow).join("")}</div>`;
 }
 function viewCalendar() {
@@ -684,9 +590,9 @@ function viewCalendar() {
   const ev = Engine.events(list, 30).slice(0, 200);
   const groups = {};
   ev.forEach(e => (groups[e.date] = groups[e.date] || []).push(e));
-  return `${seg([["mine", "내 종목 (관심·보유)"], ["all", `전체 ${STOCKS.length}종목`]], state.calScope, "calscope")}
+  return `${seg([["mine", "관심종목"], ["all", `전체 ${STOCKS.length}종목`]], state.calScope, "calscope")}
     <div class="sec-sub" style="margin:10px 2px">향후 30일 실적 발표·배당락 일정 · 출처 Yahoo Finance (회사 확정 공시 전에는 추정일일 수 있음)</div>
-    ${!ev.length ? `<div class="card empty-note">${state.calScope === "mine" && !list.length ? "관심종목이나 고객 포트폴리오가 없습니다. '전체'를 선택하거나 종목을 추가하세요." : "30일 이내 일정이 없습니다."}</div>`
+    ${!ev.length ? `<div class="card empty-note">${state.calScope === "mine" && !list.length ? "관심종목이 없습니다. '전체'를 선택하거나 매수 분석에서 ☆로 종목을 추가하세요." : "30일 이내 일정이 없습니다."}</div>`
       : Object.entries(groups).map(([d, es]) => `<div class="card"><div class="card-h"><div class="card-t">${d} (${"일월화수목금토"[new Date(d + "T00:00:00").getDay()]})</div><div class="card-s">${es[0].dday ? "D-" + es[0].dday : "오늘"} · ${es.length}건</div></div>${es.map(evRow).join("")}</div>`).join("")}`;
 }
 
@@ -832,159 +738,6 @@ function viewPerf() {
   <p class="note" style="padding:0 4px">수익률 = 기준일 종가 → 최신 종가, 현지 통화 기준, 배당·수수료·세금 미반영. 점수 규칙을 바꾸면 과거 기록도 새 규칙으로 다시 계산됩니다. 과거 성과가 미래 수익을 보장하지 않습니다.</p>`;
 }
 
-/* ── 고객 포트폴리오 진단 ── */
-const curPf = () => state.pfs.find(p => p.id === state.pfSel) || state.pfs[0] || null;
-function pfSave() { const p = curPf(); if (p) p.updated = today(); store.set("pfs", state.pfs); }
-function pfNew() {
-  const name = prompt("고객 이름(별칭)을 입력하세요.\n주민번호·계좌번호 등 민감한 정보는 넣지 마세요.", "");
-  if (!name || !name.trim()) return;
-  const p = { id: Date.now().toString(36), client: name.trim().slice(0, 30), holdings: [], updated: today() };
-  state.pfs.push(p); state.pfSel = p.id; state.pfSim = null;
-  store.set("pfSel", p.id); store.set("pfs", state.pfs);
-  render();
-}
-function pfDelete() {
-  const p = curPf();
-  if (!p || !confirm(`${p.client} 고객 포트폴리오를 삭제할까요? (상담 이력은 유지됩니다)`)) return;
-  state.pfs = state.pfs.filter(x => x.id !== p.id); state.pfSel = state.pfs[0]?.id || null; state.pfSim = null;
-  store.set("pfSel", state.pfSel); store.set("pfs", state.pfs);
-  render();
-}
-function pfAdd(code) {
-  const p = curPf();
-  if (!p) { toast("먼저 '+ 고객'으로 고객을 추가하세요"); return; }
-  if (p.holdings.some(h => h.code === code)) { toast("이미 보유 목록에 있습니다"); return; }
-  p.holdings.push({ code, qty: 0, avg: byCode[code].price });
-  pfSave(); render();
-  setTimeout(() => document.querySelector(`[data-pfq="${code}"]`)?.focus(), 50);
-}
-const fxOf = s => s.cur === "USD" ? USDKRW : 1;
-function pfStats(holdings) {
-  const rows = holdings.filter(h => byCode[h.code] && h.qty > 0).map(h => {
-    const s = byCode[h.code], val = h.qty * s.price * fxOf(s), cost = h.qty * (h.avg || s.price) * fxOf(s);
-    return { h, s, val, cost, ret: cost ? (val / cost - 1) * 100 : 0, sc: Engine.score(s).total };
-  });
-  const total = rows.reduce((t, r) => t + r.val, 0), cost = rows.reduce((t, r) => t + r.cost, 0);
-  rows.forEach(r => r.w = total ? r.val / total : 0);
-  rows.sort((a, b) => b.val - a.val);
-  const by = k => { const m = {}; rows.forEach(r => m[k(r.s)] = (m[k(r.s)] || 0) + r.w); return Object.entries(m).sort((a, b) => b[1] - a[1]); };
-  const hhi = rows.reduce((t, r) => t + r.w * r.w, 0);
-  const wavg = f => rows.reduce((t, r) => t + (f(r) ?? 0) * r.w, 0);
-  return { rows, total, cost, pnl: total - cost, ret: cost ? (total / cost - 1) * 100 : 0,
-    sectors: by(s => s.sector), countries: by(s => s.market === "US" ? "미국" : "국내"),
-    effN: hhi ? 1 / hhi : 0, top1: rows[0]?.w || 0, score: wavg(r => r.sc), vol: wavg(r => r.s.vol) };
-}
-function pfFlags(st) {
-  const f = [];
-  if (st.top1 > 0.3) f.push(`한 종목 비중 ${(st.top1 * 100).toFixed(0)}% (${st.rows[0].s.name}) — 30% 초과 집중`);
-  if (st.sectors[0] && st.sectors[0][1] > 0.5 && st.rows.length > 1) f.push(`${st.sectors[0][0]} 업종 비중 ${(st.sectors[0][1] * 100).toFixed(0)}% — 업종 쏠림`);
-  if (st.effN < 4) f.push(`실질 분산 종목 수 ${st.effN.toFixed(1)}개 — 분산 부족 (권장 5개 이상)`);
-  if (st.vol >= 45) f.push(`가중평균 변동성 연 ${st.vol.toFixed(0)}% — 위험 높음`);
-  const weak = pfWeak(st);
-  if (weak.length) f.push(`점검 필요 종목 ${weak.length}개: ${weak.map(r => r.s.name).join(", ")}`);
-  return f;
-}
-const pfWeak = st => st.rows.filter(r => r.sc < 55 || Engine.sellCheck(r.s).verdict.t === "매도 근거 충분");
-// 원화 금액 표기: 조·억·만원
-const krw = v => { const a = Math.abs(v), sg = v < 0 ? "-" : "";
-  return sg + (a >= 1e12 ? (a / 1e12).toLocaleString("ko-KR", { maximumFractionDigits: 2 }) + "조" : a >= 1e8 ? (a / 1e8).toLocaleString("ko-KR", { maximumFractionDigits: 2 }) + "억" : Math.round(a / 1e4).toLocaleString("ko-KR") + "만") + "원"; };
-const wbars = arr => arr.map(([k, w]) => `<div class="wbar"><span>${k}</span><div class="trk"><i style="width:${(w * 100).toFixed(1)}%"></i></div><b class="num">${(w * 100).toFixed(1)}%</b></div>`).join("");
-function pfAlts(p, r) {
-  const owned = c => p.holdings.some(h => h.code === c);
-  let alts = Engine.alternatives(r.s, "similar", {}, 6).filter(a => !owned(a.s.code));
-  if (alts.length < 3) alts = alts.concat(Engine.alternatives(r.s, "best", {}, 10).filter(a => !owned(a.s.code) && !alts.some(x => x.s.code === a.s.code)));
-  return alts.slice(0, 3);
-}
-function pfSimHoldings(p, r, alt) {
-  const s = alt.s, q = r.val / (s.price * fxOf(s));
-  return p.holdings.map(h => h.code === r.s.code ? { code: s.code, qty: s.market === "KR" ? Math.floor(q) : Math.floor(q * 100) / 100, avg: s.price } : h);
-}
-function viewPortfolio() {
-  const p = curPf();
-  const head = `<div class="pf-top">
-    ${state.pfs.length ? `<label class="fld" style="flex:1"><span>고객</span><select data-pfsel>${state.pfs.map(x => `<option value="${x.id}" ${p && x.id === p.id ? "selected" : ""}>${esc(x.client)} (${x.holdings.length}종목)</option>`).join("")}</select></label>` : ""}
-    <button class="btn-sec" data-act="pfnew">+ 고객</button>${p ? `<button class="btn-sec" data-act="pfdel">삭제</button>` : ""}</div>`;
-  if (!p) return head + `<div class="empty"><div class="ic">${ic("cmp", 26)}</div><b>고객 포트폴리오를 만들어 보세요</b><p>보유 종목·수량·평균 매입가를 넣으면<br>수익률, 업종·국가 쏠림, 위험도를 진단하고<br>약한 종목의 교체 효과를 미리 계산합니다</p></div>
-    <p class="note" style="padding:0 4px">기록은 이 기기 브라우저에만 저장됩니다. 민감한 개인정보는 입력하지 마세요.</p>`;
-  return head + `<div class="card"><div class="card-h"><div class="card-t">보유 종목 ${p.holdings.length}</div><div class="card-s">미국 종목 단가는 달러</div></div>
-    ${searchBox("q-pf", "보유 종목 추가 — 종목명·코드", false)}
-    ${p.holdings.length ? `<div class="hold hold-h"><span>종목</span><span>수량</span><span>평균단가</span><span></span></div>` + p.holdings.map(h => { const s = byCode[h.code]; if (!s) return ""; return `<div class="hold"><div><b>${s.name}</b><span class="num">현재 ${money(s, s.price)}</span></div>
-      <input type="number" inputmode="decimal" min="0" step="any" data-pfq="${h.code}" value="${h.qty || ""}" placeholder="수량">
-      <input type="number" inputmode="decimal" min="0" step="any" data-pfa="${h.code}" value="${h.avg || ""}" placeholder="단가">
-      <button data-act="pfrm" data-arg="${h.code}" aria-label="삭제">✕</button></div>`; }).join("") : `<div class="empty-note">위 검색창으로 보유 종목을 추가하세요</div>`}
-  </div>
-  <div id="pf-diag"></div>
-  ${pfLogs(p)}
-  <p class="note" style="padding:0 4px">평가금액은 최신 종가·환율(${USDKRW.toLocaleString("ko-KR")}원/$) 기준이며 미국 종목 매입원가도 현재 환율로 환산한 근사치입니다. 수수료·세금 미반영.</p>`;
-}
-function renderPfDiag() {
-  const el = $("#pf-diag"), p = curPf();
-  if (!el || !p) return;
-  const st = pfStats(p.holdings);
-  if (!st.rows.length) { el.innerHTML = p.holdings.length ? `<div class="card empty-note">수량을 입력하면 진단 결과가 나옵니다</div>` : ""; return; }
-  const flags = pfFlags(st), weak = new Set(pfWeak(st).map(r => r.s.code));
-  let h = `<div class="card">
-    <div class="card-h"><div class="card-t">진단 결과</div><button class="card-s link" data-act="pfcopy">요약 복사</button></div>
-    <div class="pm-grid"><div><span>평가금액</span><b class="num">${krw(st.total)}</b></div><div><span>평가손익</span><b class="num ${ud(st.pnl)}">${st.pnl > 0 ? "+" : ""}${krw(st.pnl)}</b></div><div><span>수익률</span><b class="num ${ud(st.ret)}">${pc(st.ret)}</b></div></div>
-    <div class="pm-grid" style="margin-top:6px"><div><span>평균 종합점수</span><b class="num">${st.score.toFixed(0)}점</b></div><div><span>가중 변동성</span><b class="num">연 ${st.vol.toFixed(0)}%</b></div><div><span>실질 분산 종목</span><b class="num">${st.effN.toFixed(1)}개</b></div></div>
-    <div class="rs-group" style="margin-top:14px">점검 사항 ${flags.length}</div>
-    ${flags.length ? flags.map(t => `<div class="chk"><i class="s">!</i><span>${t}</span></div>`).join("") : `<div class="chk"><i class="h">✓</i><span>특이한 집중·위험 신호가 없습니다</span></div>`}
-    <div class="rs-group">업종 비중</div>${wbars(st.sectors)}
-    <div class="rs-group">국가 비중</div>${wbars(st.countries)}
-  </div>
-  <div class="card"><div class="card-h"><div class="card-t">종목별 진단</div><div class="card-s">비중순 · 교체 시뮬레이션</div></div>`;
-  for (const r of st.rows) {
-    const v = Engine.sellCheck(r.s).verdict;
-    h += `<div class="pf-row ${weak.has(r.s.code) ? "weak" : ""}">
-      <div class="row-main" data-act="buy" data-arg="${r.s.code}"><b>${r.s.name}</b><span class="num">비중 ${(r.w * 100).toFixed(1)}% · 수익률 <em class="${ud(r.ret)}">${pc(r.ret)}</em> · ${v.t}</span></div>
-      ${sbadge(r.sc)}<button class="sim-btn ${state.pfSim === r.s.code ? "on" : ""}" data-act="pfsim" data-arg="${r.s.code}">교체<br>시뮬</button></div>`;
-    if (state.pfSim === r.s.code) h += pfSimPanel(p, st, r);
-  }
-  el.innerHTML = h + `</div>`;
-}
-function pfSimPanel(p, st, r) {
-  const alts = pfAlts(p, r);
-  if (!alts.length) return `<div class="sim empty-note">대체 후보가 없습니다</div>`;
-  const alt = alts[state.pfSimAlt] || alts[0];
-  const after = pfStats(pfSimHoldings(p, r, alt));
-  const line = (l, a, b, fmt, better) => `<div class="sim-r"><span>${l}</span><b class="num">${fmt(a)}</b><i>→</i><b class="num ${better(a, b) ? "better" : ""}">${fmt(b)}</b></div>`;
-  return `<div class="sim">
-    <div class="sim-t">${r.s.name} → 대체 후보</div>
-    <div class="chips" style="margin:6px 0 8px">${alts.map((a, i) => `<button class="chip ${a === alt ? "on" : ""}" data-act="pfalt" data-arg="${i}">${a.s.name} ${a.sc.total}점</button>`).join("")}</div>
-    ${line("평균 종합점수", st.score, after.score, v => v.toFixed(0) + "점", (a, b) => b > a)}
-    ${line("가중 변동성", st.vol, after.vol, v => "연 " + v.toFixed(0) + "%", (a, b) => b < a)}
-    ${line("최대 업종 비중", st.sectors[0][1], after.sectors[0][1], v => (v * 100).toFixed(0) + "%", (a, b) => b < a)}
-    ${line("실질 분산 종목", st.effN, after.effN, v => v.toFixed(1) + "개", (a, b) => b > a)}
-    ${alt.reasons.length ? `<div class="alt-why">${alt.reasons.map(x => `<div><b>${x.t}</b> — ${x.d}</div>`).join("")}</div>` : ""}
-    <button class="btn-pri" style="margin-top:10px" data-act="pfapply">이 교체안을 포트폴리오에 반영</button>
-    <p class="note">같은 평가금액으로 교체했다고 가정한 계산입니다 (수수료·세금·호가 미반영).</p>
-  </div>`;
-}
-function pfApplySim() {
-  const p = curPf(), st = pfStats(p.holdings), r = st.rows.find(x => x.s.code === state.pfSim);
-  if (!r) return;
-  const alt = pfAlts(p, r)[state.pfSimAlt] || pfAlts(p, r)[0];
-  if (!alt || !confirm(`${r.s.name}을(를) ${alt.s.name}(으)로 교체한 것으로 포트폴리오를 수정할까요?\n(실제 주문이 아니라 이 앱의 기록만 바뀝니다)`)) return;
-  p.holdings = pfSimHoldings(p, r, alt);
-  state.pfSim = null; pfSave(); render();
-  toast(`${alt.s.name}(으)로 교체 반영`);
-}
-function pfLogs(p) {
-  const ls = state.logs.filter(l => l.client === p.client).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 5);
-  return `<div class="card"><div class="card-h"><div class="card-t">${esc(p.client)} 상담 이력 ${ls.length}</div><button class="card-s link" data-act="logclient" data-arg="${esc(p.client)}">+ 상담 기록</button></div>
-    ${ls.length ? ls.map(logCard).join("") : `<div class="empty-note">이 고객의 상담 기록이 없습니다</div>`}</div>`;
-}
-function pfText() {
-  const p = curPf(), st = pfStats(p.holdings), flags = pfFlags(st);
-  return [`[포트폴리오 진단] ${p.client} · ${DATA_ASOF} 기준`,
-    `평가금액 ${krw(st.total)} · 평가손익 ${st.pnl > 0 ? "+" : ""}${krw(st.pnl)} · 수익률 ${pc(st.ret)} · 평균 점수 ${st.score.toFixed(0)}점 · 가중 변동성 연 ${st.vol.toFixed(0)}% · 실질 분산 ${st.effN.toFixed(1)}개`,
-    "", "■ 보유 종목", ...st.rows.map(r => `- ${r.s.name} ${(r.w * 100).toFixed(1)}% · 수익률 ${pc(r.ret)} · 점수 ${r.sc}`),
-    "", "■ 업종 비중: " + st.sectors.map(([k, w]) => `${k} ${(w * 100).toFixed(0)}%`).join(", "),
-    "", "■ 점검 사항", ...(flags.length ? flags.map(f => "- " + f) : ["- 특이 사항 없음"]),
-    "", "※ 공개 데이터 기반 참고자료이며 투자 권유가 아닙니다. 수수료·세금 미반영."].join("\n");
-}
-
-
 /* ── 상담 요약 ── */
 function summaryText(s) {
   const { total } = Engine.score(s), g = Engine.grade(total), rs = Engine.buyReasons(s), up = Engine.upsideOf(s);
@@ -1016,12 +769,9 @@ function render() {
   $("#v-" + state.view).innerHTML = VIEWS[state.view]();
   for (const id of Object.keys(PICKERS)) bindSearch(id, PICKERS[id]);
   if (state.view === "screen") renderScreenerResults();
-  if ($("#pf-diag")) renderPfDiag();
   ensureDetails();
   const tray = $("#tray");
   tray.innerHTML = state.cmp.length && state.view !== "my" ? `<button data-act="myt" data-arg="cmp">${ic("cmp", 16)} 비교함 ${state.cmp.length}/4 · 비교하기 ›</button>` : "";
-  const lq = $("#log-q");
-  if (lq) lq.addEventListener("input", () => { state.logQ = lq.value; const pos = lq.selectionStart; render(); const n = $("#log-q"); n.focus(); n.setSelectionRange(pos, pos); });
 }
 function go(v) {
   state.view = v;
@@ -1055,24 +805,9 @@ const ACTIONS = {
   cmpclear: () => { state.cmp = []; store.set("cmp", state.cmp); render(); },
   cmpcopy: () => copyText(compareText(), "비교 요약을 복사했습니다"),
   myt: a => { state.myTab = a; state.view === "my" ? render() : go("my"); },
-  logadd: a => openLogForm(a),
-  logclient: a => openLogForm("", null, a),
   calscope: a => { state.calScope = a; render(); },
   perfmkt: a => { state.perfMkt = a; render(); },
   perfbase: a => { state.perfBase = a; render(); },
-  pfnew: () => pfNew(),
-  pfsel: a => { state.pfSel = a; store.set("pfSel", a); state.pfSim = null; render(); },
-  pfdel: () => pfDelete(),
-  pfrm: a => { const pf = curPf(); pf.holdings = pf.holdings.filter(h => h.code !== a); pfSave(); render(); },
-  pfsim: a => { state.pfSim = state.pfSim === a ? null : a; state.pfSimAlt = 0; render(); },
-  pfalt: a => { state.pfSimAlt = +a; render(); },
-  pfapply: () => pfApplySim(),
-  pfcopy: () => copyText(pfText(), "포트폴리오 진단 요약을 복사했습니다"),
-  logedit: a => openLogForm("", a),
-  logsave: a => saveLogForm(a || null),
-  logdone: a => { const l = state.logs.find(l => l.id === a); if (l) { l.done = true; saveLogs(); toast("연락 완료로 표시했습니다"); render(); } },
-  logdel: a => { const l = state.logs.find(l => l.id === a); if (l && confirm(`${l.client} 고객의 ${l.date} 상담 기록을 삭제할까요?`)) { state.logs = state.logs.filter(x => x.id !== a); saveLogs(); render(); } },
-  csv: () => exportCSV(),
   sheetclose: () => $("#sheet").classList.remove("on"),
 };
 document.addEventListener("click", e => {
@@ -1083,13 +818,7 @@ document.addEventListener("click", e => {
 });
 document.addEventListener("change", e => {
   const t = e.target;
-  if (t.dataset.pfsel !== undefined) { ACTIONS.pfsel(t.value); return; }
   if (t.dataset.perfbase !== undefined) { state.perfBase = t.value; render(); return; }
-  if (t.dataset.pfq || t.dataset.pfa) {
-    const h = curPf()?.holdings.find(h => h.code === (t.dataset.pfq || t.dataset.pfa));
-    if (h) { h[t.dataset.pfq ? "qty" : "avg"] = Math.max(0, parseFloat(t.value) || 0); pfSave(); state.pfSim = null; renderPfDiag(); }
-    return;
-  }
   if (t.dataset.scr) { state.scr[t.dataset.scr] = t.value; renderScreenerResults(); }
 });
 document.addEventListener("input", e => {

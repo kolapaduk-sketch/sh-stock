@@ -1,0 +1,55 @@
+# SH STOCK — PC 없이 클라우드에서 매일 데이터 갱신 + 웹앱 배포 (GitHub Actions + GitHub Pages)
+name: update-data
+
+on:
+  schedule:
+    - cron: "10 7 * * 1-5"    # 16:10 KST 평일 — 국내장 마감 후
+    - cron: "10 22 * * 1-5"   # 07:10 KST 화~토 — 미국장 마감 후
+  workflow_dispatch: {}        # GitHub 화면에서 수동 실행
+  push:
+    branches: [main]
+    paths: ["app/**", "tools/**", ".github/workflows/**"]
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: update-data
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 데이터 수집 (시세·재무·컨센서스·뉴스·공시)
+        if: github.event_name != 'push'
+        env:
+          PYTHONIOENCODING: utf-8
+          TZ: Asia/Seoul
+        run: python tools/fetch_data.py
+      - name: 교차 검증
+        if: github.event_name != 'push'
+        env:
+          PYTHONIOENCODING: utf-8
+          TZ: Asia/Seoul
+        run: python tools/verify_data.py
+      - name: 변경된 데이터 저장
+        if: github.event_name != 'push'
+        run: |
+          git config user.name "sh-stock-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add app/data.js app/news.js app/verify.js tools/verify_report.txt
+          git diff --cached --quiet || git commit -m "데이터 자동 갱신 $(TZ=Asia/Seoul date '+%Y-%m-%d %H:%M')"
+          git push
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: app
+      - uses: actions/deploy-pages@v4

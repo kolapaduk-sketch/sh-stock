@@ -12,7 +12,7 @@ from universe import KR_LIST, US_LIST
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "app" / "data.js"
 NEWS_OUT = ROOT / "app" / "news.js"
-PER_MARKET = 150
+PER_MARKET = 250
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130 Safari/537.36"
 jar = http.cookiejar.CookieJar()
@@ -81,6 +81,18 @@ SECTOR_OVERRIDE = {
     "086520": ("소재", "2차전지소재"), "036930": ("기술", "반도체장비·소재"), "095340": ("기술", "반도체장비·소재"),
     "084370": ("기술", "반도체장비·소재"), "064760": ("기술", "반도체장비·소재"), "087010": ("헬스케어", "바이오"),
     "039200": ("헬스케어", "바이오"), "950160": ("헬스케어", "바이오"),
+    "000250": ("헬스케어", "제약"),
+    "067310": ("기술", "반도체"),
+    "457190": ("소재", "화학"),
+    "080220": ("기술", "반도체"),
+    "095610": ("기술", "반도체장비·소재"),
+    "131970": ("기술", "반도체"),
+    "214370": ("헬스케어", "바이오"),
+    "237690": ("헬스케어", "바이오"),
+    "058610": ("산업재", "산업기계"),
+    "078600": ("기술", "전자부품"),
+    "101490": ("기술", "반도체장비·소재"),
+    "099320": ("산업재", "항공우주·방산"),
 }
 
 
@@ -115,7 +127,7 @@ def naver_quote(code):
     r = urllib.request.Request(f"https://fchart.stock.naver.com/sise.nhn?symbol={code}&timeframe=day&count=260&requestType=0", headers={"User-Agent": UA})
     rows = [x.split("|") for x in re.findall(r'data="([^"]+)"', urllib.request.urlopen(r, timeout=20).read().decode("euc-kr", "replace"))]
     rows = [x for x in rows if float(x[4]) > 0]
-    return {"price": float(b["closePrice"].replace(",", "")), "chg": float(b.get("fluctuationsRatio") or 0), "mcap": cap,
+    return {"name": b.get("stockName"), "price": float(b["closePrice"].replace(",", "")), "chg": float(b.get("fluctuationsRatio") or 0), "mcap": cap,
             "closes": [float(x[4]) for x in rows], "highs": [float(x[2]) for x in rows], "lows": [float(x[3]) for x in rows],
             "dates": [f"{x[0][:4]}-{x[0][4:6]}-{x[0][6:8]}" for x in rows]}
 
@@ -212,6 +224,8 @@ def fetch_one(code, name, market):
     if market == "KR":
         if code in SECTOR_OVERRIDE:
             item["sector"], item["industry"] = SECTOR_OVERRIDE[code]
+        elif item["sector"] == "기타":
+            print(f"  [섹터 없음] {code} {name}: SECTOR_OVERRIDE 에 추가 필요")
         try:
             nv = naver(code)
             for k in ("per", "fper", "pbr", "foreign"):
@@ -231,6 +245,11 @@ def fetch_one(code, name, market):
                 item.update(price=nq["price"], chg=nq["chg"], src="네이버", d0=nq["dates"][-250:][0], **price_stats(nq["price"], nq["closes"], nq["highs"], nq["lows"]))
                 if nq["mcap"]:
                     item["mcapRaw"] = nq["mcap"] * 1e8  # 억원 → 원 (main 에서 다시 억원 환산)
+            # 종목명은 거래소 공식명(네이버) 사용 — 목록의 코드 오기 시 다른 회사 이름이 붙는 것을 방지
+            if nq.get("name") and nq["name"].replace(" ", "") != name.replace(" ", ""):
+                print(f"  [이름 확인] {code}: 목록 '{name}' → 공식명 '{nq['name']}'")
+            if nq.get("name"):
+                item["name"] = nq["name"]
         except Exception as e:
             print(f"  네이버 시세 실패 {code} {name}: {e} — Yahoo 시세 유지")
         try:

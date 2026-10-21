@@ -34,6 +34,8 @@ def other_source(s):
             for suf in (".KS", ".KQ"):
                 try:
                     r = get(f"https://query1.finance.yahoo.com/v8/finance/chart/{s['code']}{suf}?range=2y&interval=1d")["chart"]["result"][0]
+                    if datetime.datetime.now().timestamp() - r["meta"]["regularMarketTime"] > 10 * 86400:
+                        continue  # 상장 이전·폐지된 '유령 심볼'(오래된 시세)은 대조에서 제외
                     if not best or r["meta"]["regularMarketTime"] > best["meta"]["regularMarketTime"]:
                         best = r
                 except Exception:
@@ -82,7 +84,10 @@ def main():
         lim = 30.5 if s["market"] == "KR" else 60
         for i in range(1, len(h)):
             m = (h[i] / h[i - 1] - 1) * 100
-            if abs(m) > lim:
+            # 미국: 급변 후 가격이 유지되면(다음 날 ±30% 이내) 실제 이벤트로 보고 참고 처리. 국내는 가격제한폭 초과 = 오류
+            if abs(m) > lim and s["market"] == "US" and i + 1 < len(h) and abs(h[i + 1] / h[i] - 1) < 0.3:
+                notes.append(f"[급변동(가격 유지)] {tag}: {h[i-1]:,} → {h[i]:,} ({m:+.1f}%) — 실제 이벤트 가능, 뉴스 확인")
+            elif abs(m) > lim:
                 issues.append(f"[일간 변동 이상치] {tag}: {h[i-1]:,} → {h[i]:,} ({m:+.1f}%)")
         if abs((s["price"] / h[0] - 1) * 100 - s["r1y"]) > 0.05:
             issues.append(f"[수익률 재계산 불일치] {tag}")

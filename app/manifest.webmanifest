@@ -1,7 +1,7 @@
 {
   "name": "SH STOCK",
   "short_name": "SH STOCK",
-  "description": "국내·미국 300종목 매수·매도 분석과 전일 시장 브리핑",
+  "description": "국내·미국 500종목 매수·매도 분석과 전일 시장 브리핑",
   "lang": "ko",
   "start_url": "./",
   "scope": "./",

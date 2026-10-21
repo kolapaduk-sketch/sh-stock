@@ -290,7 +290,7 @@ function makeEngine(STOCKS) {
     const pool = STOCKS.filter(s => s.market === market);
     const by = {};
     for (const s of pool) (by[s.sector] = by[s.sector] || []).push(s);
-    const secs = Object.entries(by).filter(([, g]) => g.length >= 3).map(([sector, g]) => ({
+    const secs = Object.entries(by).filter(([sec, g]) => g.length >= 3 && sec !== "기타").map(([sector, g]) => ({
       sector, n: g.length,
       d1: avg(g.map(s => s.chg)), up: g.filter(s => s.chg > 0).length,
       m1: avg(g.map(s => s.r1m)), sc: avg(g.map(s => score(s).total)),

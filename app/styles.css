@@ -451,3 +451,7 @@ a.news:hover b{color:var(--brand)}
 .sim-r span{color:var(--t2)}
 .sim-r i{font-style:normal;color:var(--t3);text-align:center}
 .sim-r b.better{color:var(--brand)}
+
+.chart-loading{display:grid;place-items:center;font-size:12px;color:var(--t3);background:var(--line-2);border-radius:10px}
+.sbadge.thin{background:var(--line-2);color:var(--t3);font-size:11px}
+.thin-note{font-size:12px;color:#8A5A00;background:var(--warn-soft);border-radius:10px;padding:9px 11px;margin:-2px 0 12px;line-height:1.5}

@@ -1,4 +1,6 @@
 # SH STOCK — PC 없이 클라우드에서 매일 데이터 갱신 + 웹앱 배포 (GitHub Actions + GitHub Pages)
+# 생성 데이터(data.js, detail/)는 저장소에 커밋하지 않고 바로 배포한다(저장소 비대화 방지).
+# 저장소에는 추천 성과 추적용 일별 스냅샷(app/history/)만 쌓는다.
 name: update-data
 
 on:
@@ -22,31 +24,29 @@ concurrency:
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: 데이터 수집 (시세·재무·컨센서스·뉴스·공시)
-        if: github.event_name != 'push'
+      - name: 데이터 수집 (약 2,000종목 · 시세·재무·수급·뉴스·공시)
         env:
           PYTHONIOENCODING: utf-8
+          PYTHONUNBUFFERED: "1"
           TZ: Asia/Seoul
         run: python tools/fetch_data.py
       - name: 교차 검증
-        if: github.event_name != 'push'
         env:
           PYTHONIOENCODING: utf-8
           TZ: Asia/Seoul
         run: python tools/verify_data.py
-      - name: 변경된 데이터 저장
-        if: github.event_name != 'push'
+      - name: 일별 스냅샷 저장
         run: |
           git config user.name "sh-stock-bot"
           git config user.email "actions@users.noreply.github.com"
-          git add app/data.js app/news.js app/verify.js app/history tools/verify_report.txt
-          git diff --cached --quiet || git commit -m "데이터 자동 갱신 $(TZ=Asia/Seoul date '+%Y-%m-%d %H:%M')"
+          git add app/history
+          git diff --cached --quiet || git commit -m "스냅샷 $(TZ=Asia/Seoul date '+%Y-%m-%d %H:%M')"
           git push
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

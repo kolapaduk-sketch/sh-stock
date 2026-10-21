@@ -3,3 +3,10 @@ __pycache__/
 tools/update.log
 .claude/
 *.jpg
+# 수집기가 만드는 데이터 (클라우드에서 매번 새로 생성해 바로 배포)
+app/data.js
+app/news.js
+app/verify.js
+app/detail/
+tools/verify_report.txt
+*.tmp

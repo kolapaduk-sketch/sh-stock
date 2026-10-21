@@ -46,7 +46,7 @@ function makeEngine(STOCKS) {
   // 기술적 지표: 이동평균(20·60·120), RSI(14), 골든/데드크로스(20일선 vs 60일선, 최근 15거래일)
   const techCache = new Map();
   function tech(s) {
-    if (!s.hist || s.hist.length < 30) return null;
+    if (!s.hist || s.hist.length < 30) return s.tech || null;  // 차트 미로드 시 수집기가 미리 계산한 값 사용
     if (techCache.has(s.code)) return techCache.get(s.code);
     const h = [...s.hist]; h[h.length - 1] = s.price;
     const ma = n => h.map((_, i) => i + 1 >= n ? avg(h.slice(i + 1 - n, i + 1)) : null);
@@ -125,6 +125,9 @@ function makeEngine(STOCKS) {
     return { value, growth, quality, momentum, consensus };
   }
 
+  // 데이터 부족: PBR·ROE·성장률·목표가·선행PER 중 3개 미만이면 점수 신뢰도가 낮아 추천 순위에서 제외
+  const isThin = s => [s.pbr, s.roe, ok(s.epsG) ? s.epsG : s.revG, s.target, s.fper].filter(ok).length < 3;
+
   const cache = new Map();
   function score(s) {
     if (cache.has(s.code)) return cache.get(s.code);
@@ -134,9 +137,10 @@ function makeEngine(STOCKS) {
     cache.set(s.code, r);
     return r;
   }
-  const ranked = () => STOCKS.map(s => ({ s, sc: score(s) })).sort((a, b) => b.sc.total - a.sc.total);
-  let rankCache;
-  const rankOf = s => { rankCache = rankCache || ranked().map(o => o.s.code); return rankCache.indexOf(s.code) + 1; };
+  let rankedCache;
+  const ranked = () => rankedCache || (rankedCache = STOCKS.filter(s => !isThin(s)).map(s => ({ s, sc: score(s) })).sort((a, b) => b.sc.total - a.sc.total));
+  let rankMap;
+  const rankOf = s => { rankMap = rankMap || new Map(ranked().map((o, i) => [o.s.code, i + 1])); return rankMap.get(s.code) || 0; };
 
   function grade(total) {
     if (total >= 68) return { label: "매수 우위", cls: "g-buy", desc: "팩터 전반이 우수해 신규 매수·비중 확대를 검토할 만한 구간" };
@@ -226,7 +230,7 @@ function makeEngine(STOCKS) {
   // opt: { market: "all"|"KR"|"US" }
   function alternatives(sold, mode = "similar", opt = {}, n = 5) {
     const base = score(sold);
-    let pool = STOCKS.filter(s => s.code !== sold.code);
+    let pool = STOCKS.filter(s => s.code !== sold.code && !isThin(s));
     if (opt.market && opt.market !== "all") pool = pool.filter(s => s.market === opt.market);
     if (mode === "similar") pool = pool.filter(s => s.sector === sold.sector);
     if (mode === "diversify") pool = pool.filter(s => s.sector !== sold.sector);
@@ -293,8 +297,8 @@ function makeEngine(STOCKS) {
     const secs = Object.entries(by).filter(([sec, g]) => g.length >= 3 && sec !== "기타").map(([sector, g]) => ({
       sector, n: g.length,
       d1: avg(g.map(s => s.chg)), up: g.filter(s => s.chg > 0).length,
-      m1: avg(g.map(s => s.r1m)), sc: avg(g.map(s => score(s).total)),
-      picks: g.map(s => ({ s, t: score(s).total })).sort((a, b) => b.t - a.t).slice(0, 3).map(o => o.s),
+      m1: avg(g.map(s => s.r1m)), sc: avg((g.some(s => !isThin(s)) ? g.filter(s => !isThin(s)) : g).map(s => score(s).total)),
+      picks: g.filter(s => !isThin(s)).map(s => ({ s, t: score(s).total })).sort((a, b) => b.t - a.t).slice(0, 3).map(o => o.s),
       f5: g.reduce((t, s) => t + (s.flow ? s.flow.f5 + s.flow.o5 : 0), 0),
       fp: avg(g.map(s => s.flow && s.mcap ? (s.flow.f5 + s.flow.o5) / s.mcap * 100 : 0)),
     }));
@@ -337,6 +341,6 @@ function makeEngine(STOCKS) {
   }
 
   return { score, grade, ranked, rankOf, buyReasons, sellCheck, alternatives, screen, upsideOf, rangePos, sectorPer, recLabel,
-    riskTier, riskLabel, money, RISK, newsDigest, discTag, marketBrief, flowPct, flowTxt, tech, events, FACTOR_LABEL, WEIGHTS };
+    riskTier, riskLabel, money, isThin, RISK, newsDigest, discTag, marketBrief, flowPct, flowTxt, tech, events, FACTOR_LABEL, WEIGHTS };
 }
 const Engine = makeEngine(STOCKS);

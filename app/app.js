@@ -4,7 +4,36 @@
 const $ = s => document.querySelector(s);
 const byCode = Object.fromEntries(STOCKS.map(s => [s.code, s]));
 const SECTORS = [...new Set(STOCKS.map(s => s.sector))].sort();
-const HAS_NEWS = typeof NEWS !== "undefined";
+window.NEWS = window.NEWS || {};
+const hasNews = code => !!NEWS[code];
+// 종목별 상세 파일(app/detail/<코드>.js: 1년 주가·뉴스·공시)은 종목을 열 때만 불러온다
+const DETAIL_STATE = {};
+const detailFile = code => "detail/" + code.replace(/[^A-Za-z0-9_-]/g, "_") + ".js";
+function loadDetail(code) {
+  if (DETAIL_STATE[code]) return DETAIL_STATE[code];
+  return (DETAIL_STATE[code] = new Promise(res => {
+    const sc = document.createElement("script");
+    sc.src = detailFile(code) + "?v=" + encodeURIComponent(DATA_ASOF);
+    sc.onload = () => {
+      const d = window.DETAIL && window.DETAIL[code], s = byCode[code];
+      if (d && s) { s.hist = d.hist; NEWS[code] = { news: d.news || [], disc: d.disc || [] }; }
+      res(!!d);
+    };
+    sc.onerror = () => res(false);
+    document.body.appendChild(sc);
+  }));
+}
+function neededDetails() {
+  if (state.view === "buy") return [state.buy];
+  if (state.view === "sell") return [state.sell];
+  if (state.view === "my" && state.myTab === "cmp") return state.cmp;
+  if (state.view === "my" && state.myTab === "pf") return (curPf()?.holdings || []).map(h => h.code);
+  return [];
+}
+function ensureDetails() {
+  const miss = neededDetails().filter(c => c && byCode[c] && !byCode[c].hist && !DETAIL_STATE[c]);
+  if (miss.length) Promise.all(miss.map(loadDetail)).then(() => render());
+}
 
 const store = {
   get(k, d) { try { const v = localStorage.getItem("sh_" + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
@@ -60,6 +89,7 @@ async function copyText(t, msg) {
 
 /* ── components ── */
 function series(s, period) {
+  if (!s.hist) return [s.price, s.price];
   const len = Math.min({ "1M": 21, "3M": 63, "6M": 126, "1Y": 250 }[period], s.hist.length);
   const d = s.hist.slice(-len);
   d[d.length - 1] = s.price;
@@ -168,7 +198,7 @@ function stockRow(s, i) {
     ${i != null ? `<div class="rank">${i + 1}</div>` : ""}
     <div class="row-main"><b>${s.name}</b><span>${s.market === "US" ? "미국" : "국내"} · ${s.sector} · 시총 ${cap(s.mcap)} · PER ${perTxt(s)}</span></div>
     <div class="row-r"><b class="num">${money(s, s.price)}</b><span class="num ${ud(s.chg)}">${pc(s.chg)}</span></div>
-    ${sbadge(Engine.score(s).total)}</div>`;
+    ${Engine.isThin(s) ? `<div class="sbadge thin" title="데이터 부족">부족</div>` : sbadge(Engine.score(s).total)}</div>`;
 }
 
 /* ── 데이터 검증 결과 ── */
@@ -242,7 +272,7 @@ function viewHome() {
 
 /* ── 매수 분석 ── */
 function stockHead(s) {
-  const c = chartSVG(s, state.period), on = state.watch.has(s.code), prev = s.price / (1 + s.chg / 100);
+  const c = s.hist ? chartSVG(s, state.period) : null, on = state.watch.has(s.code), prev = s.price / (1 + s.chg / 100);
   return `<div class="card">
     <div class="sh"><div><div class="sh-name">${s.name}</div>
       <div class="sh-meta"><span>${s.code}</span>${mktBadge(s)}<span class="badge">${s.exch}</span><span class="badge">${s.sector}</span>${riskBadge(s)}</div>
@@ -252,14 +282,15 @@ function stockHead(s) {
     <div class="price num ${ud(s.chg)}">${s.cur === "USD" ? "$" + s.price.toLocaleString("en-US", { minimumFractionDigits: 2 }) : won(s.price) + "<small>원</small>"}</div>
     <div class="pchg num ${ud(s.chg)}">${arrow(s.chg)} ${s.cur === "USD" ? "$" + Math.abs(s.price - prev).toFixed(2) : won(Math.abs(s.price - prev))} (${pc(s.chg, 2)}) <span class="flat" style="font-weight:500">${krwHint(s)}</span></div>
     <div style="margin-top:14px" class="noprint">${seg([["1M", "1개월"], ["3M", "3개월"], ["6M", "6개월"], ["1Y", "1년"]], state.period, "period")}</div>
-    <div class="chart">${c.svg}</div>
+    ${c ? `<div class="chart">${c.svg}</div>
     <div class="ma-legend"><span><i style="background:${c.r >= 0 ? "#E5322D" : "#1E64D8"}"></i>주가</span>${[20, 60, 120].map(n => `<span><i style="background:${MA_COLORS[n]}"></i>${n}일선</span>`).join("")}</div>
-    <div class="chart-foot num"><span>기간 수익률 <b class="${ud(c.r)}">${pc(c.r)}</b></span><span>최고 ${money(s, Math.max(...series(s, state.period)))} · 최저 ${money(s, Math.min(...series(s, state.period)))}</span></div>
+    <div class="chart-foot num"><span>기간 수익률 <b class="${ud(c.r)}">${pc(c.r)}</b></span><span>최고 ${money(s, Math.max(...series(s, state.period)))} · 최저 ${money(s, Math.min(...series(s, state.period)))}</span></div>`
+      : `<div class="chart chart-loading">차트 불러오는 중…</div>`}
   </div>`;
 }
 
 function newsCard(s) {
-  if (!HAS_NEWS) return "";
+  if (!hasNews(s.code)) return `<div class="card"><div class="card-h"><div class="card-t">공시 · 뉴스</div></div><div class="empty-note">불러오는 중…</div></div>`;
   const d = Engine.newsDigest(s.code);
   const toneCls = { "긍정 우세": "g-buy", "부정 우세": "g-caution", "중립": "g-neutral" }[d.tone];
   const allLink = s.market === "KR" ? `https://finance.naver.com/item/news.naver?code=${s.code}` : `https://finance.yahoo.com/quote/${encodeURIComponent(s.yf)}/news`;
@@ -293,7 +324,8 @@ function viewBuy() {
     <button data-act="sell" data-arg="${s.code}">${ic("swap")}<span>교체 추천</span></button>
   </div>
   <div class="card">
-    <div class="card-h"><div class="card-t">AI 투자의견</div><div class="card-s">${STOCKS.length}종목 중 ${Engine.rankOf(s)}위</div></div>
+    <div class="card-h"><div class="card-t">AI 투자의견</div><div class="card-s">${Engine.rankOf(s) ? `${Engine.ranked().length}종목 중 ${Engine.rankOf(s)}위` : "순위 제외 · 데이터 부족"}</div></div>
+    ${Engine.isThin(s) ? `<div class="thin-note">재무·컨센서스 데이터가 부족해(PBR·ROE·성장률·목표가·선행PER 중 3개 미만) 점수 신뢰도가 낮습니다. 추천 순위·업종 대표 종목에서 제외됩니다.</div>` : ""}
     <div class="score-wrap">${gauge(total)}<div><span class="grade ${g.cls}">${g.label}</span><div class="grade-desc">${g.desc}</div></div></div>
     <div class="radar">${radar(f)}</div>
     ${Object.keys(Engine.WEIGHTS).map(k => `<div class="fbar"><span class="lbl">${Engine.FACTOR_LABEL[k]}</span><div class="trk"><div class="fil" style="width:${f[k]}%"></div></div><span class="v num">${Math.round(f[k])}</span></div>`).join("")}
@@ -358,7 +390,7 @@ function viewSell() {
       <div class="sh-meta num">${money(s, s.price)} <span class="${ud(s.chg)}">${pc(s.chg)}</span> · 시총 ${cap(s.mcap)} · PER ${perTxt(s)}</div></div>${sbadge(base.total)}</div>
   </div>
   <div class="card">
-    <div class="card-h"><div class="card-t">매도 점검</div><div class="card-s">종합점수 ${base.total}점 · ${Engine.rankOf(s)}위</div></div>
+    <div class="card-h"><div class="card-t">매도 점검</div><div class="card-s">종합점수 ${base.total}점 · ${Engine.rankOf(s) ? Engine.rankOf(s) + "위" : "순위 제외(데이터 부족)"}</div></div>
     <div class="verdict ${chk.verdict.cls}" style="background:${vcol}"><b>${chk.verdict.t}</b><span style="font-size:12px">매도 근거 ${chk.sell.length} · 보유 근거 ${chk.hold.length}</span></div>
     ${chk.sell.map(t => `<div class="chk"><i class="s">↓</i><span>${t}</span></div>`).join("")}
     ${chk.hold.map(t => `<div class="chk"><i class="h">↑</i><span>${t}</span></div>`).join("")}
@@ -465,7 +497,7 @@ const CMP_ROWS = [
   ["컨센서스"],
   ["목표가 업사이드", s => Engine.upsideOf(s), v => pc(v), "high", true],
   ["투자의견(1~5)", s => s.rec, v => v.toFixed(2) + " " + Engine.recLabel(v), "low"],
-  ["뉴스 톤", s => HAS_NEWS ? Engine.newsDigest(s.code).tone : null, v => v],
+  ["뉴스 톤", s => hasNews(s.code) ? Engine.newsDigest(s.code).tone : null, v => v],
 ];
 function compareConclusion(list) {
   const best = (fn, dir = "high") => { const v = list.map(s => [s, fn(s)]).filter(([, v]) => v != null && isFinite(v)); if (v.length < 2) return null; v.sort((a, b) => dir === "high" ? b[1] - a[1] : a[1] - b[1]); return v[0][0]; };
@@ -505,7 +537,7 @@ function viewCompare() {
   <div class="card">
     <div class="card-h"><div class="card-t">수익률 비교</div><div class="card-s">시작점 = 100</div></div>
     <div class="noprint">${seg([["1M", "1개월"], ["3M", "3개월"], ["6M", "6개월"], ["1Y", "1년"]], state.period, "period")}</div>
-    <div class="chart" style="height:160px">${overlaySVG(list, state.period)}</div>
+    ${list.every(s => s.hist) ? `<div class="chart" style="height:160px">${overlaySVG(list, state.period)}</div>` : `<div class="chart chart-loading" style="height:160px">차트 불러오는 중…</div>`}
     <div class="legend">${list.map((s, i) => { const d = series(s, state.period); const r = (d[d.length - 1] / d[0] - 1) * 100; return `<span><i style="background:${CMP_COLORS[i]}"></i>${s.name} <b class="num ${ud(r)}">${pc(r)}</b></span>`; }).join("")}</div>
   </div>
   <div class="card">
@@ -649,7 +681,7 @@ function homeEventsCard() {
 }
 function viewCalendar() {
   const list = state.calScope === "mine" ? myCodes().map(c => byCode[c]) : STOCKS;
-  const ev = Engine.events(list, 30);
+  const ev = Engine.events(list, 30).slice(0, 200);
   const groups = {};
   ev.forEach(e => (groups[e.date] = groups[e.date] || []).push(e));
   return `${seg([["mine", "내 종목 (관심·보유)"], ["all", `전체 ${STOCKS.length}종목`]], state.calScope, "calscope")}
@@ -734,7 +766,8 @@ function perfCompute(d, mkt) {
   if (perfCache[key]) return perfCache[key];
   const snap = window.SNAPS && window.SNAPS[d];
   if (!snap) return null;
-  const E = makeEngine(snap.stocks);
+  const snapStocks = snap.stocks || (snap._rows = snap._rows || snap.rows.map(r => Object.fromEntries(snap.keys.map((k, i) => [k, r[i]]))));
+  const E = makeEngine(snapStocks);
   const mean = a => a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0;
   const rows = E.ranked().filter(o => (mkt === "all" || o.s.market === mkt) && byCode[o.s.code] && o.s.price > 0)
     .map(o => ({ code: o.s.code, name: o.s.name, score: o.sc.total, sector: o.s.sector, market: o.s.market, ret: (byCode[o.s.code].price / o.s.price - 1) * 100 }));
@@ -955,7 +988,7 @@ function pfText() {
 /* ── 상담 요약 ── */
 function summaryText(s) {
   const { total } = Engine.score(s), g = Engine.grade(total), rs = Engine.buyReasons(s), up = Engine.upsideOf(s);
-  const nd = HAS_NEWS ? Engine.newsDigest(s.code) : null;
+  const nd = hasNews(s.code) ? Engine.newsDigest(s.code) : null;
   const L = [
     `[종목 상담 요약] ${DATA_ASOF} 기준`,
     `${s.name}(${s.code}·${s.exch}) ${money(s, s.price)} (${pc(s.chg, 2)})`,
@@ -984,6 +1017,7 @@ function render() {
   for (const id of Object.keys(PICKERS)) bindSearch(id, PICKERS[id]);
   if (state.view === "screen") renderScreenerResults();
   if ($("#pf-diag")) renderPfDiag();
+  ensureDetails();
   const tray = $("#tray");
   tray.innerHTML = state.cmp.length && state.view !== "my" ? `<button data-act="myt" data-arg="cmp">${ic("cmp", 16)} 비교함 ${state.cmp.length}/4 · 비교하기 ›</button>` : "";
   const lq = $("#log-q");

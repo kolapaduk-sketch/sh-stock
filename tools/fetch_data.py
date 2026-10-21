@@ -165,12 +165,16 @@ def fetch_one(code, name, market):
     if not cands:
         return None, f"{code} {name}: 시세 없음(또는 오래된 시세)"
     sym, meta, closes, ts = max(cands, key=lambda c: c[3])  # 가장 최근 거래일 심볼
-    mods = "price,summaryDetail,defaultKeyStatistics,financialData,assetProfile"
+    mods = "price,summaryDetail,defaultKeyStatistics,financialData,assetProfile,calendarEvents"
     try:
         q = get(f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{sym}?modules={mods}&crumb={CRUMB}")["quoteSummary"]["result"][0]
     except Exception as e:
         return None, f"{code} {name}: 재무 없음 ({e})"
     pr, sd, ks, fd, ap = (q.get(m, {}) for m in ("price", "summaryDetail", "defaultKeyStatistics", "financialData", "assetProfile"))
+    ce = q.get("calendarEvents") or {}
+    ed = ((ce.get("earnings") or {}).get("earningsDate") or [{}])[0]
+    cal = {"earn": ed.get("fmt"), "earnEst": bool((ce.get("earnings") or {}).get("isEarningsDateEstimate")),
+           "exdiv": (ce.get("exDividendDate") or {}).get("fmt"), "divPay": (ce.get("dividendDate") or {}).get("fmt")}
 
     price = raw(pr, "regularMarketPrice") or closes[-1]
     prev = raw(pr, "regularMarketPreviousClose") or closes[-2]
@@ -201,7 +205,7 @@ def fetch_one(code, name, market):
         "nAnalyst": raw(fd, "numberOfAnalystOpinions") or 0,
         "epsG": pct(raw(fd, "earningsGrowth")), "revG": pct(raw(fd, "revenueGrowth")),
         "beta": rnd(raw(sd, "beta")),
-        "foreign": None, "src": "Yahoo",
+        "foreign": None, "src": "Yahoo", "flow": None, **cal,
         **price_stats(price, closes), "d0": meta["dates"][-250:][0],
         "ts": ts,
     }
@@ -229,7 +233,44 @@ def fetch_one(code, name, market):
                     item["mcapRaw"] = nq["mcap"] * 1e8  # 억원 → 원 (main 에서 다시 억원 환산)
         except Exception as e:
             print(f"  네이버 시세 실패 {code} {name}: {e} — Yahoo 시세 유지")
+        try:
+            item["flow"] = naver_flow(code)
+        except Exception as e:
+            print(f"  수급 실패 {code} {name}: {e}")
     return item, None
+
+
+def naver_flow(code):
+    """최근 20거래일 외국인·기관 순매수 (네이버). 금액(억원) = 순매수 수량 × 당일 종가"""
+    rows = get(f"https://m.stock.naver.com/api/stock/{code}/trend?pageSize=20")
+    n = lambda v: float(str(v).replace(",", "").replace("+", "") or 0)
+    f = [n(r["foreignerPureBuyQuant"]) * n(r["closePrice"]) / 1e8 for r in rows]
+    o = [n(r["organPureBuyQuant"]) * n(r["closePrice"]) / 1e8 for r in rows]
+    streak = 0  # 외국인 연속 순매수(+)/순매도(-) 일수
+    for v in f:
+        if v == 0 or (streak and (v > 0) != (streak > 0)):
+            break
+        streak += 1 if v > 0 else -1
+    return {"f1": round(f[0], 1), "f5": round(sum(f[:5]), 1), "f20": round(sum(f[:20]), 1),
+            "o1": round(o[0], 1), "o5": round(sum(o[:5]), 1), "o20": round(sum(o[:20]), 1),
+            "fstreak": streak, "date": rows[0]["bizdate"] if rows else None}
+
+
+SNAP_KEYS = ("code", "name", "market", "sector", "cur", "price", "chg", "mcap", "per", "fper", "pbr", "roe", "opm", "debt",
+             "epsG", "revG", "r1m", "r3m", "r6m", "hi52", "lo52", "target", "rec", "nAnalyst", "vol", "div", "flow")
+
+
+def save_snapshot(final, market, asof):
+    """추천 성과 추적용 일별 스냅샷 — 그날의 점수 계산에 필요한 값만 저장 (app/history/YYYY-MM-DD.js)"""
+    hdir = ROOT / "app" / "history"
+    hdir.mkdir(exist_ok=True)
+    day = asof[:10]
+    snap = {"asof": asof, "market": market, "stocks": [{k: s.get(k) for k in SNAP_KEYS} for s in final]}
+    write_atomic(hdir / f"{day}.js", f'(window.SNAPS = window.SNAPS || {{}})["{day}"] = '
+                 + json.dumps(snap, ensure_ascii=False, separators=(",", ":")) + ";\n")
+    dates = sorted(p.stem for p in hdir.glob("????-??-??.js"))
+    write_atomic(hdir / "index.js", "// 자동 생성 — 스냅샷 날짜 목록\nconst SNAP_DATES = " + json.dumps(dates) + ";\n")
+    print(f"스냅샷 저장: {day} (누적 {len(dates)}일)")
 
 
 def clean(t):
@@ -307,6 +348,7 @@ def main():
           f"const STOCKS = {json.dumps(final, ensure_ascii=False, separators=(',', ':'))};\n")
     write_atomic(OUT, js)
     print(f"저장: {OUT} · {len(final)}종목 · {OUT.stat().st_size // 1024}KB")
+    save_snapshot(final, market, asof)
 
     print("뉴스·공시 수집 중...")
     with ThreadPoolExecutor(max_workers=6) as ex:

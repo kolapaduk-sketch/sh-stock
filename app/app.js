@@ -14,7 +14,8 @@ const SCR_DEFAULT = { market: "all", sector: "", perMax: "", roeMin: "", divMin:
 const state = {
   view: "home", buy: null, sell: null, mode: "similar", period: "3M",
   homeMkt: "all", altMkt: "all", briefMkt: "KR", scr: { ...SCR_DEFAULT },
-  myTab: "cmp", logQ: "",
+  myTab: "pf", logQ: "", calScope: "mine", perfMkt: "all", perfBase: null, pfSim: null, pfSimAlt: 0,
+  pfs: store.get("pfs", []), pfSel: store.get("pfSel", null),
   watch: new Set(store.get("watch", [])),
   cmp: store.get("cmp", []).filter(c => byCode[c]),
   logs: store.get("logs", []),
@@ -64,9 +65,13 @@ function series(s, period) {
   d[d.length - 1] = s.price;
   return d;
 }
+const MA_COLORS = { 20: "#F5A623", 60: "#12A26B", 120: "#8B5CF6" };
 function chartSVG(s, period) {
   const d = series(s, period);
-  const lo = Math.min(...d), hi = Math.max(...d), W = 400, H = 150, pad = 8;
+  const t = Engine.tech(s), off = s.hist.length - d.length;
+  const mas = t ? [[20, t.m20], [60, t.m60], [120, t.m120]].map(([n, a]) => [n, a.slice(off)]) : [];
+  const allV = d.concat(...mas.map(([, a]) => a.filter(v => v != null)));
+  const lo = Math.min(...allV), hi = Math.max(...allV), W = 400, H = 150, pad = 8;
   const X = i => (i / (d.length - 1)) * W, Y = v => pad + (1 - (v - lo) / (hi - lo || 1)) * (H - pad * 2);
   const line = d.map((v, i) => `${i ? "L" : "M"}${X(i).toFixed(1)},${Y(v).toFixed(1)}`).join("");
   const r = (d[d.length - 1] / d[0] - 1) * 100;
@@ -78,6 +83,7 @@ function chartSVG(s, period) {
       <defs><linearGradient id="ga" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${col}" stop-opacity=".18"/><stop offset="1" stop-color="${col}" stop-opacity="0"/></linearGradient></defs>
       <line x1="0" x2="${W}" y1="${yb}" y2="${yb}" stroke="#C3CBD6" stroke-dasharray="3 4" vector-effect="non-scaling-stroke"/>
       <path d="${line}L${W},${H}L0,${H}Z" fill="url(#ga)"/>
+      ${mas.map(([n, a]) => { let p = "", st = false; a.forEach((v, i) => { if (v == null) return; p += `${st ? "L" : "M"}${X(i).toFixed(1)},${Y(v).toFixed(1)}`; st = true; }); return p ? `<path d="${p}" fill="none" stroke="${MA_COLORS[n]}" stroke-width="1.2" stroke-opacity=".9" vector-effect="non-scaling-stroke"/>` : ""; }).join("")}
       <path d="${line}" fill="none" stroke="${col}" stroke-width="2" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
     </svg>`
   };
@@ -152,6 +158,7 @@ const PICKERS = {
   "q-buy": c => { state.buy = c; render(); window.scrollTo(0, 0); },
   "q-sell": c => { state.sell = c; render(); window.scrollTo(0, 0); },
   "q-cmp": c => addCompare(c),
+  "q-pf": c => pfAdd(c),
 };
 
 const disclaimer = `<div class="disc"><b>투자 유의사항</b> · 본 화면의 점수·추천·뉴스 요약은 공개 데이터(Yahoo Finance·네이버 증권, ${DATA_ASOF} 수집)에 룰 기반 지표를 적용한 참고 정보이며 투자 권유가 아닙니다. 데이터는 실시간이 아니고 오류가 있을 수 있습니다. 투자 판단과 결과의 책임은 투자자 본인에게 있습니다.</div>`;
@@ -223,6 +230,8 @@ function viewHome() {
     <div class="card-h"><div class="card-t">종합점수 TOP 10</div><div class="card-s">${pool.length}종목 중</div></div>
     ${pool.slice(0, 10).map((o, i) => stockRow(o.s, i)).join("")}
   </div>
+  ${homeEventsCard()}
+  ${perfHomeCard()}
   ${verifyCard()}
   <div class="card">
     <div class="card-h"><div class="card-t">섹터 1개월 수익률</div><div class="card-s">종목 단순평균</div></div>
@@ -237,13 +246,15 @@ function stockHead(s) {
   return `<div class="card">
     <div class="sh"><div><div class="sh-name">${s.name}</div>
       <div class="sh-meta"><span>${s.code}</span>${mktBadge(s)}<span class="badge">${s.exch}</span><span class="badge">${s.sector}</span>${riskBadge(s)}</div>
-      <div class="sh-sub">${esc(s.en)}${s.industry ? " · " + s.industry : ""}</div></div>
+      <div class="sh-sub">${esc(s.en)}${s.industry ? " · " + s.industry : ""}</div>
+      ${evChips(s)}</div>
       <button class="star noprint ${on ? "on" : ""}" data-act="star" data-arg="${s.code}" aria-label="관심종목"><svg width="18" height="18" viewBox="0 0 24 24" fill="${on ? "currentColor" : "none"}" stroke="currentColor" stroke-width="2" stroke-linejoin="round">${ICON.star}</svg></button></div>
     <div class="price num ${ud(s.chg)}">${s.cur === "USD" ? "$" + s.price.toLocaleString("en-US", { minimumFractionDigits: 2 }) : won(s.price) + "<small>원</small>"}</div>
     <div class="pchg num ${ud(s.chg)}">${arrow(s.chg)} ${s.cur === "USD" ? "$" + Math.abs(s.price - prev).toFixed(2) : won(Math.abs(s.price - prev))} (${pc(s.chg, 2)}) <span class="flat" style="font-weight:500">${krwHint(s)}</span></div>
     <div style="margin-top:14px" class="noprint">${seg([["1M", "1개월"], ["3M", "3개월"], ["6M", "6개월"], ["1Y", "1년"]], state.period, "period")}</div>
     <div class="chart">${c.svg}</div>
-    <div class="chart-foot num"><span>기간 수익률 <b class="${ud(c.r)}">${pc(c.r)}</b></span><span>최고 ${money(s, c.hi)} · 최저 ${money(s, c.lo)}</span></div>
+    <div class="ma-legend"><span><i style="background:${c.r >= 0 ? "#E5322D" : "#1E64D8"}"></i>주가</span>${[20, 60, 120].map(n => `<span><i style="background:${MA_COLORS[n]}"></i>${n}일선</span>`).join("")}</div>
+    <div class="chart-foot num"><span>기간 수익률 <b class="${ud(c.r)}">${pc(c.r)}</b></span><span>최고 ${money(s, Math.max(...series(s, state.period)))} · 최저 ${money(s, Math.min(...series(s, state.period)))}</span></div>
   </div>`;
 }
 
@@ -294,6 +305,8 @@ function viewBuy() {
     <div class="rs-group">리스크 ${rs.cons.length}</div>
     ${rs.cons.length ? rs.cons.map(r => item("c", "!", r)).join("") : `<div class="empty-note">주요 리스크 요인이 확인되지 않습니다</div>`}
   </div>
+  ${techCard(s)}
+  ${flowCard(s)}
   ${newsCard(s)}
   <div class="card">
     <div class="card-h"><div class="card-t">투자 지표</div><div class="card-s">${DATA_ASOF}</div></div>
@@ -517,12 +530,13 @@ function compareText() {
 const LOG_TYPES = ["매수 상담", "매도 상담", "교체 상담", "포트폴리오 점검", "일반 문의"];
 const LOG_REACT = ["관심", "검토 중", "보류", "매수 결정", "매도 결정", "거절"];
 function saveLogs() { store.set("logs", state.logs); }
-function openLogForm(code = "", id = null) {
-  const e = id ? state.logs.find(l => l.id === id) : null;
+function openLogForm(code = "", id = null, client = "") {
+  const e = id ? state.logs.find(l => l.id === id) : (client ? { client } : null);
+  const editing = !!(id && e);
   const sel = e ? e.code : code;
   const opts = [...STOCKS].sort((a, b) => a.name.localeCompare(b.name, "ko")).map(s => `<option value="${s.code}" ${s.code === sel ? "selected" : ""}>${s.name} (${s.code})</option>`).join("");
   $("#sheet").innerHTML = `<div class="sheet-bg" data-act="sheetclose"></div><div class="sheet-p">
-    <div class="sheet-h"><b>${e ? "상담 기록 수정" : "상담 기록"}</b><button data-act="sheetclose">✕</button></div>
+    <div class="sheet-h"><b>${editing ? "상담 기록 수정" : "상담 기록"}</b><button data-act="sheetclose">✕</button></div>
     <p class="sheet-d">기록은 이 기기의 브라우저에만 저장됩니다. 주민번호·계좌번호·연락처 등 민감한 개인정보는 입력하지 마세요.</p>
     <div class="fgrid2">
       <label class="fld"><span>고객 (이름·별칭)*</span><input id="lf-client" maxlength="30" value="${esc(e?.client || "")}" placeholder="예: 김OO 고객"></label>
@@ -533,7 +547,7 @@ function openLogForm(code = "", id = null) {
     <label class="fld" style="margin-top:8px"><span>관련 종목</span><select id="lf-code"><option value="">(종목 없음)</option>${opts}</select></label>
     <label class="fld" style="margin-top:8px"><span>메모</span><textarea id="lf-memo" rows="3" maxlength="500" placeholder="상담 내용, 고객 의견 등">${esc(e?.memo || "")}</textarea></label>
     <label class="fld" style="margin-top:8px"><span>다음 연락일 (선택)</span><input id="lf-next" type="date" value="${e?.next || ""}"></label>
-    <button class="btn-pri" data-act="logsave" data-arg="${e ? e.id : ""}">${e ? "수정 저장" : "저장"}</button>
+    <button class="btn-pri" data-act="logsave" data-arg="${editing ? e.id : ""}">${editing ? "수정 저장" : "저장"}</button>
   </div>`;
   $("#sheet").classList.add("on");
   setTimeout(() => $("#lf-client").focus(), 50);
@@ -606,10 +620,337 @@ function viewWatch() {
   return `<div class="card">${list.map(s => stockRow(s)).join("")}</div>`;
 }
 function viewMy() {
-  const tabs = [["cmp", `종목 비교${state.cmp.length ? " " + state.cmp.length : ""}`], ["log", `상담 이력${state.logs.length ? " " + state.logs.length : ""}`], ["watch", `관심종목${state.watch.size ? " " + state.watch.size : ""}`]];
-  const body = { cmp: viewCompare, log: viewLogs, watch: viewWatch }[state.myTab]();
-  return `<div class="sec-title noprint">MY 업무</div><div class="noprint" style="margin:10px 0 14px">${seg(tabs, state.myTab, "myt", "seg-navy")}</div>${body}`;
+  const n = v => v ? " " + v : "";
+  const tabs = [["pf", "포트폴리오" + n(state.pfs.length)], ["cmp", "종목 비교" + n(state.cmp.length)], ["log", "상담 이력" + n(state.logs.length)],
+    ["cal", "일정"], ["perf", "추천 성과"], ["watch", "관심종목" + n(state.watch.size)]];
+  const body = { pf: viewPortfolio, cmp: viewCompare, log: viewLogs, cal: viewCalendar, perf: viewPerf, watch: viewWatch }[state.myTab]();
+  return `<div class="sec-title noprint">MY 업무</div><div class="tabs noprint">${tabs.map(([v, l]) => `<button data-act="myt" data-arg="${v}" class="${state.myTab === v ? "on" : ""}">${l}</button>`).join("")}</div>${body}`;
 }
+
+/* ── 일정 (실적 발표·배당락) ── */
+function evChips(s) {
+  const ev = Engine.events([s], 60);
+  return ev.length ? `<div class="ev-chips">${ev.map(e => `<span class="evc ${e.dday <= 7 ? "soon" : ""}">${e.type} ${e.date.slice(5).replace("-", "/")}${e.est ? "(추정)" : ""} · D-${e.dday}</span>`).join("")}</div>` : "";
+}
+function myCodes() {
+  return [...new Set([...state.watch, ...state.pfs.flatMap(p => p.holdings.map(h => h.code))])].filter(c => byCode[c]);
+}
+function evRow(e) {
+  return `<div class="row" data-act="buy" data-arg="${e.s.code}"><div class="ev-d ${e.dday <= 7 ? "soon" : ""}"><b>${e.dday ? "D-" + e.dday : "오늘"}</b><span>${e.date.slice(5).replace("-", "/")}</span></div>
+    <div class="row-main"><b>${e.s.name}</b><span>${e.type}${e.est ? " (예정일 추정)" : ""} · ${e.s.market === "US" ? "미국" : "국내"} · ${e.s.sector}</span></div>${sbadge(Engine.score(e.s).total)}</div>`;
+}
+function homeEventsCard() {
+  const mine = myCodes().map(c => byCode[c]);
+  const ev = mine.length ? Engine.events(mine, 14) : Engine.events([...STOCKS].sort((a, b) => b.mcap - a.mcap).slice(0, 60), 7);
+  if (!ev.length) return "";
+  return `<div class="card"><div class="card-h"><div class="card-t">다가오는 일정</div><button class="card-s link" data-act="myt" data-arg="cal">전체 보기 ›</button></div>
+    <div class="card-s" style="margin:-6px 0 4px">${mine.length ? "관심종목·고객 보유종목 · 14일 이내" : "시총 상위 60종목 · 7일 이내 (관심·보유 종목이 생기면 내 종목 기준)"}</div>
+    ${ev.slice(0, 5).map(evRow).join("")}</div>`;
+}
+function viewCalendar() {
+  const list = state.calScope === "mine" ? myCodes().map(c => byCode[c]) : STOCKS;
+  const ev = Engine.events(list, 30);
+  const groups = {};
+  ev.forEach(e => (groups[e.date] = groups[e.date] || []).push(e));
+  return `${seg([["mine", "내 종목 (관심·보유)"], ["all", `전체 ${STOCKS.length}종목`]], state.calScope, "calscope")}
+    <div class="sec-sub" style="margin:10px 2px">향후 30일 실적 발표·배당락 일정 · 출처 Yahoo Finance (회사 확정 공시 전에는 추정일일 수 있음)</div>
+    ${!ev.length ? `<div class="card empty-note">${state.calScope === "mine" && !list.length ? "관심종목이나 고객 포트폴리오가 없습니다. '전체'를 선택하거나 종목을 추가하세요." : "30일 이내 일정이 없습니다."}</div>`
+      : Object.entries(groups).map(([d, es]) => `<div class="card"><div class="card-h"><div class="card-t">${d} (${"일월화수목금토"[new Date(d + "T00:00:00").getDay()]})</div><div class="card-s">${es[0].dday ? "D-" + es[0].dday : "오늘"} · ${es.length}건</div></div>${es.map(evRow).join("")}</div>`).join("")}`;
+}
+
+/* ── 기술적 분석 · 수급 ── */
+function techCard(s) {
+  const t = Engine.tech(s);
+  if (!t) return "";
+  const cls = v => /정배열|상승|골든/.test(v) ? "up" : /역배열|하락|데드/.test(v) ? "down" : "";
+  const maCell = n => { const v = t.ma[n]; return v ? `<div><span>${n}일선</span><b class="num">${money(s, v)}</b><em class="num ${ud(s.price - v)}">현재가 ${pc((s.price / v - 1) * 100)}</em></div>` : `<div><span>${n}일선</span><b>-</b></div>`; };
+  return `<div class="card"><div class="card-h"><div class="card-t">기술적 분석</div><div class="card-s">일봉 · 최근 1년</div></div>
+    <div class="tech-grid">
+      <div><span>이동평균 배열</span><b class="${cls(t.align)}">${t.align}</b></div>
+      <div><span>크로스 신호</span><b class="${t.cross ? cls(t.cross.type) : ""}">${t.cross ? t.cross.type : "없음"}</b><em>${t.cross ? (t.cross.ago ? t.cross.ago + "거래일 전" : "오늘") : "최근 15거래일"}</em></div>
+      <div><span>RSI(14)</span><b class="${t.rsi >= 70 ? "up" : t.rsi <= 30 ? "down" : ""}">${t.rsi.toFixed(0)}</b><em>${t.rsi >= 70 ? "과매수" : t.rsi <= 30 ? "과매도" : "중립"}</em></div>
+    </div>
+    <div class="rsi"><div class="rsi-trk"><i style="left:${Math.max(0, Math.min(100, t.rsi))}%"></i></div>
+      <div class="rsi-l"><span style="left:0">0</span><span style="left:30%">30 과매도</span><span style="left:70%">과매수 70</span><span style="left:100%">100</span></div></div>
+    <div class="ma-grid">${[20, 60, 120].map(maCell).join("")}</div>
+    <p class="note">골든크로스 = 20일선이 60일선을 위로 돌파(데드크로스는 반대). 정배열 = 주가 > 20일 > 60일 > 120일선. 기술적 신호는 후행 지표입니다.</p></div>`;
+}
+function flowCard(s) {
+  const f = s.flow;
+  if (!f) return "";
+  const c = v => `<b class="num ${ud(v)}">${Engine.flowTxt(v)}</b>`;
+  const fp = Engine.flowPct(s);
+  return `<div class="card"><div class="card-h"><div class="card-t">수급 · 외국인/기관</div><div class="card-s">${f.date ? `${f.date.slice(0, 4)}-${f.date.slice(4, 6)}-${f.date.slice(6)}` : ""} 기준 순매수</div></div>
+    <div class="ftab"><span></span><span>1일</span><span>5일</span><span>20일</span>
+      <span class="fl">외국인</span>${c(f.f1)}${c(f.f5)}${c(f.f20)}
+      <span class="fl">기관</span>${c(f.o1)}${c(f.o5)}${c(f.o20)}</div>
+    <div class="fsum">${f.fstreak ? `<span class="${f.fstreak > 0 ? "up" : "down"}">외국인 ${Math.abs(f.fstreak)}일 연속 ${f.fstreak > 0 ? "순매수" : "순매도"}</span>` : ""}
+      <span>20일 외국인+기관 = 시총의 <b class="${ud(fp)}">${fp == null ? "-" : (fp > 0 ? "+" : "") + fp.toFixed(2) + "%"}</b></span>
+      ${s.foreign != null ? `<span>외국인 소진율 ${s.foreign}%</span>` : ""}</div>
+    <p class="note">금액 = 일별 순매수 수량 × 당일 종가(근사치) · 출처 네이버 증권 · 종합점수 모멘텀에 20% 반영</p></div>`;
+}
+function techSummary(s) {
+  const t = Engine.tech(s), f = s.flow, out = [];
+  if (t) out.push(`기술: ${t.align}${t.cross ? ` · ${t.cross.type}(${t.cross.ago}거래일 전)` : ""} · RSI ${t.rsi.toFixed(0)}`);
+  if (f) out.push(`수급(5일): 외국인 ${Engine.flowTxt(f.f5)} · 기관 ${Engine.flowTxt(f.o5)}${f.fstreak ? ` · 외국인 ${Math.abs(f.fstreak)}일 연속 ${f.fstreak > 0 ? "순매수" : "순매도"}` : ""}`);
+  const ev = Engine.events([s], 30);
+  if (ev.length) out.push(`일정: ${ev.map(e => `${e.type} ${e.date}`).join(", ")}`);
+  return out.length ? ["", "■ 기술·수급·일정", ...out.map(l => "- " + l)] : [];
+}
+
+/* ── 추천 성과 추적 ── */
+// 매일 저장한 스냅샷(app/history/날짜.js)을 같은 규칙으로 다시 채점 → 그때 추천 종목의 이후 수익률을 계산
+const PERF = { loaded: {}, loading: false };
+const perfCache = {};
+const snapDates = () => typeof SNAP_DATES !== "undefined" ? SNAP_DATES : [];
+const baseCandidates = () => snapDates().filter(d => d < DATA_ASOF.slice(0, 10));
+function loadSnap(d) {
+  return new Promise(res => {
+    if (window.SNAPS && window.SNAPS[d]) return res(window.SNAPS[d]);
+    const sc = document.createElement("script");
+    sc.src = `history/${d}.js?t=${Date.now()}`;
+    sc.onload = () => res(window.SNAPS && window.SNAPS[d]);
+    sc.onerror = () => res(null);
+    document.body.appendChild(sc);
+  });
+}
+function defaultBase() {
+  const c = baseCandidates();
+  if (!c.length) return null;
+  const target = new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10);  // 약 1개월 전
+  const older = c.filter(d => d <= target);
+  return older.length ? older[older.length - 1] : c[0];
+}
+async function loadPerfSnaps() {
+  const d = defaultBase();
+  if (!d || PERF.loaded[d] || PERF.loading) return;
+  PERF.loading = true;
+  await loadSnap(d);
+  PERF.loaded[d] = true; PERF.loading = false;
+  if (state.view === "home" || (state.view === "my" && state.myTab === "perf")) render();
+}
+function perfCompute(d, mkt) {
+  const key = d + "|" + mkt;
+  if (perfCache[key]) return perfCache[key];
+  const snap = window.SNAPS && window.SNAPS[d];
+  if (!snap) return null;
+  const E = makeEngine(snap.stocks);
+  const mean = a => a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0;
+  const rows = E.ranked().filter(o => (mkt === "all" || o.s.market === mkt) && byCode[o.s.code] && o.s.price > 0)
+    .map(o => ({ code: o.s.code, name: o.s.name, score: o.sc.total, sector: o.s.sector, market: o.s.market, ret: (byCode[o.s.code].price / o.s.price - 1) * 100 }));
+  if (rows.length < 10) return null;
+  const top = rows.slice(0, 10), univ = mean(rows.map(r => r.ret)), size = Math.ceil(rows.length / 5);
+  const quint = [0, 1, 2, 3, 4].map(i => { const g = rows.slice(i * size, (i + 1) * size); return { lo: Math.min(...g.map(r => r.score)), hi: Math.max(...g.map(r => r.score)), ret: mean(g.map(r => r.ret)) }; });
+  const idx = {};
+  for (const m of snap.market || []) { const cur = MARKET.find(x => x.name === m.name); if (cur && m.name !== "USD/KRW" && (mkt === "all" || (mkt === "KR") === /KOS/.test(m.name))) idx[m.name] = (cur.value / m.value - 1) * 100; }
+  const sectors = (mkt === "all" ? ["KR", "US"] : [mkt]).map(mk => {
+    const mrows = rows.filter(r => r.market === mk);
+    return { mk, avg: mean(mrows.map(r => r.ret)), top: E.marketBrief(mk).top.map(o => ({ sector: o.sector, ret: mean(mrows.filter(r => r.sector === o.sector).map(r => r.ret)) })) };
+  });
+  const days = Math.round((new Date(DATA_ASOF.slice(0, 10)) - new Date(d)) / 864e5);
+  return (perfCache[key] = { d, days, top, topAvg: mean(top.map(r => r.ret)), univ, hit: top.filter(r => r.ret > univ).length, quint, idx, sectors, n: rows.length });
+}
+function perfHomeCard() {
+  const dates = snapDates(), base = defaultBase();
+  if (!dates.length) return "";
+  const head = `<div class="card-h"><div class="card-t">추천 성과 추적</div><span class="card-s link">자세히 ›</span></div>`;
+  if (!base) return `<div class="card perf-mini" data-act="myt" data-arg="perf">${head}<p class="pm-txt">기록 ${dates.length}일차 (${dates[0]} 시작). 다음 갱신부터 "그때 추천한 종목이 실제로 올랐는지"를 집계합니다.</p></div>`;
+  const r = perfCompute(base, "all");
+  if (!r) return `<div class="card perf-mini">${head}<p class="pm-txt">기록 불러오는 중…</p></div>`;
+  const ex = r.topAvg - r.univ;
+  return `<div class="card perf-mini" data-act="myt" data-arg="perf">${head}
+    <p class="pm-txt">${r.d} (${r.days}일 전) 종합점수 TOP 10의 이후 수익률</p>
+    <div class="pm-grid"><div><span>TOP 10 평균</span><b class="num ${ud(r.topAvg)}">${pc(r.topAvg)}</b></div><div><span>전체 ${r.n}종목</span><b class="num ${ud(r.univ)}">${pc(r.univ)}</b></div><div><span>초과 수익</span><b class="num ${ud(ex)}">${ex > 0 ? "+" : ""}${ex.toFixed(1)}%p</b></div></div></div>`;
+}
+function viewPerf() {
+  const dates = snapDates(), cands = baseCandidates();
+  const intro = `<div class="sec-sub" style="margin:0 2px 12px">매일 자동 갱신 때 저장한 그날의 데이터로 <b>그날의 점수를 다시 계산</b>하고, 그때 추천한 종목이 지금까지 실제로 얼마나 움직였는지 비교합니다.</div>`;
+  if (!cands.length) return intro + `<div class="card"><div class="card-h"><div class="card-t">기록 ${dates.length}일차</div><div class="card-s">${dates[0] || "-"} 시작</div></div>
+    <p class="pm-txt">아직 비교할 과거 기록이 없습니다. 자동 갱신이 하루 이상 쌓이면 이 화면에 다음이 표시됩니다.</p>
+    <ul class="concl"><li>종합점수 TOP 10의 이후 수익률 — 전체 평균·지수 대비</li><li>점수 구간(5분위)별 수익률 — 점수가 높을수록 실제로 더 올랐는지</li><li>그날 '매수 가망 업종 TOP 3'의 이후 성과</li></ul>
+    <p class="note">기간이 짧을수록 우연의 영향이 큽니다. 최소 1~3개월 이상 쌓인 뒤 판단하세요.</p></div>`;
+  const base = state.perfBase && cands.includes(state.perfBase) ? state.perfBase : defaultBase();
+  if (!(window.SNAPS && window.SNAPS[base])) {
+    loadSnap(base).then(() => { PERF.loaded[base] = true; if (state.myTab === "perf") render(); });
+    return intro + `<div class="card empty-note">${base} 기록 불러오는 중…</div>`;
+  }
+  const r = perfCompute(base, state.perfMkt);
+  if (!r) return intro + `<div class="card empty-note">비교 가능한 종목이 부족합니다.</div>`;
+  const ex = r.topAvg - r.univ, qmax = Math.max(...r.quint.map(q => Math.abs(q.ret)), 0.1);
+  const qlabel = i => ["상위 20%", "20~40%", "40~60%", "60~80%", "하위 20%"][i];
+  return intro + `
+  <div class="perf-ctl"><label class="fld"><span>기준일 (그날의 추천)</span><select data-perfbase>${[...cands].reverse().map(d => `<option ${d === base ? "selected" : ""}>${d}</option>`).join("")}</select></label>
+    ${seg([["all", "전체"], ["KR", "국내"], ["US", "미국"]], state.perfMkt, "perfmkt")}</div>
+  <div class="card">
+    <div class="card-h"><div class="card-t">종합점수 TOP 10 성과</div><div class="card-s">${r.d} → ${DATA_ASOF.slice(0, 10)} (${r.days}일)</div></div>
+    <div class="pm-grid"><div><span>TOP 10 평균</span><b class="num ${ud(r.topAvg)}">${pc(r.topAvg)}</b></div><div><span>전체 ${r.n}종목</span><b class="num ${ud(r.univ)}">${pc(r.univ)}</b></div><div><span>초과 수익</span><b class="num ${ud(ex)}">${ex > 0 ? "+" : ""}${ex.toFixed(1)}%p</b></div></div>
+    <div class="pm-sub">전체 평균을 이긴 종목 <b>${r.hit}/10</b>${Object.keys(r.idx).length ? " · 지수 " + Object.entries(r.idx).map(([k, v]) => `${k} <b class="${ud(v)}">${pc(v)}</b>`).join(" · ") : ""}</div>
+    ${r.top.map((t, i) => `<div class="row" data-act="buy" data-arg="${t.code}"><div class="rank">${i + 1}</div><div class="row-main"><b>${t.name}</b><span>${t.market === "US" ? "미국" : "국내"} · ${t.sector} · 당시 ${t.score}점</span></div><div class="row-r"><b class="num ${ud(t.ret)}">${pc(t.ret)}</b></div></div>`).join("")}
+  </div>
+  <div class="card">
+    <div class="card-h"><div class="card-t">점수 구간별 수익률</div><div class="card-s">5분위 · 동일가중</div></div>
+    <div class="quint">${r.quint.map((q, i) => `<div class="qrow"><span>${qlabel(i)}<em>${q.lo}~${q.hi}점</em></span><div class="qbar"><i class="${q.ret >= 0 ? "pos" : "neg"}" style="width:${Math.abs(q.ret) / qmax * 50}%"></i></div><b class="num ${ud(q.ret)}">${pc(q.ret)}</b></div>`).join("")}</div>
+    <p class="note">${r.quint[0].ret > r.quint[4].ret ? "현재까지는 점수가 높은 구간의 수익률이 더 높습니다." : "현재까지는 점수가 높은 구간이 더 높은 수익을 내지 못했습니다."} 기간이 짧으면 우연의 영향이 큽니다.</p>
+  </div>
+  <div class="card">
+    <div class="card-h"><div class="card-t">그날의 매수 가망 업종 성과</div></div>
+    ${r.sectors.map(g => `<div class="rs-group">${g.mk === "KR" ? "국내" : "미국"} · 시장 평균 ${pc(g.avg)}</div>${g.top.map((t, i) => `<div class="row" style="cursor:default"><div class="rank">${i + 1}</div><div class="row-main"><b>${t.sector}</b></div><div class="row-r"><b class="num ${ud(t.ret)}">${pc(t.ret)}</b><span class="num ${ud(t.ret - g.avg)}">평균 대비 ${t.ret - g.avg > 0 ? "+" : ""}${(t.ret - g.avg).toFixed(1)}%p</span></div></div>`).join("")}`).join("")}
+  </div>
+  <p class="note" style="padding:0 4px">수익률 = 기준일 종가 → 최신 종가, 현지 통화 기준, 배당·수수료·세금 미반영. 점수 규칙을 바꾸면 과거 기록도 새 규칙으로 다시 계산됩니다. 과거 성과가 미래 수익을 보장하지 않습니다.</p>`;
+}
+
+/* ── 고객 포트폴리오 진단 ── */
+const curPf = () => state.pfs.find(p => p.id === state.pfSel) || state.pfs[0] || null;
+function pfSave() { const p = curPf(); if (p) p.updated = today(); store.set("pfs", state.pfs); }
+function pfNew() {
+  const name = prompt("고객 이름(별칭)을 입력하세요.\n주민번호·계좌번호 등 민감한 정보는 넣지 마세요.", "");
+  if (!name || !name.trim()) return;
+  const p = { id: Date.now().toString(36), client: name.trim().slice(0, 30), holdings: [], updated: today() };
+  state.pfs.push(p); state.pfSel = p.id; state.pfSim = null;
+  store.set("pfSel", p.id); store.set("pfs", state.pfs);
+  render();
+}
+function pfDelete() {
+  const p = curPf();
+  if (!p || !confirm(`${p.client} 고객 포트폴리오를 삭제할까요? (상담 이력은 유지됩니다)`)) return;
+  state.pfs = state.pfs.filter(x => x.id !== p.id); state.pfSel = state.pfs[0]?.id || null; state.pfSim = null;
+  store.set("pfSel", state.pfSel); store.set("pfs", state.pfs);
+  render();
+}
+function pfAdd(code) {
+  const p = curPf();
+  if (!p) { toast("먼저 '+ 고객'으로 고객을 추가하세요"); return; }
+  if (p.holdings.some(h => h.code === code)) { toast("이미 보유 목록에 있습니다"); return; }
+  p.holdings.push({ code, qty: 0, avg: byCode[code].price });
+  pfSave(); render();
+  setTimeout(() => document.querySelector(`[data-pfq="${code}"]`)?.focus(), 50);
+}
+const fxOf = s => s.cur === "USD" ? USDKRW : 1;
+function pfStats(holdings) {
+  const rows = holdings.filter(h => byCode[h.code] && h.qty > 0).map(h => {
+    const s = byCode[h.code], val = h.qty * s.price * fxOf(s), cost = h.qty * (h.avg || s.price) * fxOf(s);
+    return { h, s, val, cost, ret: cost ? (val / cost - 1) * 100 : 0, sc: Engine.score(s).total };
+  });
+  const total = rows.reduce((t, r) => t + r.val, 0), cost = rows.reduce((t, r) => t + r.cost, 0);
+  rows.forEach(r => r.w = total ? r.val / total : 0);
+  rows.sort((a, b) => b.val - a.val);
+  const by = k => { const m = {}; rows.forEach(r => m[k(r.s)] = (m[k(r.s)] || 0) + r.w); return Object.entries(m).sort((a, b) => b[1] - a[1]); };
+  const hhi = rows.reduce((t, r) => t + r.w * r.w, 0);
+  const wavg = f => rows.reduce((t, r) => t + (f(r) ?? 0) * r.w, 0);
+  return { rows, total, cost, pnl: total - cost, ret: cost ? (total / cost - 1) * 100 : 0,
+    sectors: by(s => s.sector), countries: by(s => s.market === "US" ? "미국" : "국내"),
+    effN: hhi ? 1 / hhi : 0, top1: rows[0]?.w || 0, score: wavg(r => r.sc), vol: wavg(r => r.s.vol) };
+}
+function pfFlags(st) {
+  const f = [];
+  if (st.top1 > 0.3) f.push(`한 종목 비중 ${(st.top1 * 100).toFixed(0)}% (${st.rows[0].s.name}) — 30% 초과 집중`);
+  if (st.sectors[0] && st.sectors[0][1] > 0.5 && st.rows.length > 1) f.push(`${st.sectors[0][0]} 업종 비중 ${(st.sectors[0][1] * 100).toFixed(0)}% — 업종 쏠림`);
+  if (st.effN < 4) f.push(`실질 분산 종목 수 ${st.effN.toFixed(1)}개 — 분산 부족 (권장 5개 이상)`);
+  if (st.vol >= 45) f.push(`가중평균 변동성 연 ${st.vol.toFixed(0)}% — 위험 높음`);
+  const weak = pfWeak(st);
+  if (weak.length) f.push(`점검 필요 종목 ${weak.length}개: ${weak.map(r => r.s.name).join(", ")}`);
+  return f;
+}
+const pfWeak = st => st.rows.filter(r => r.sc < 55 || Engine.sellCheck(r.s).verdict.t === "매도 근거 충분");
+// 원화 금액 표기: 조·억·만원
+const krw = v => { const a = Math.abs(v), sg = v < 0 ? "-" : "";
+  return sg + (a >= 1e12 ? (a / 1e12).toLocaleString("ko-KR", { maximumFractionDigits: 2 }) + "조" : a >= 1e8 ? (a / 1e8).toLocaleString("ko-KR", { maximumFractionDigits: 2 }) + "억" : Math.round(a / 1e4).toLocaleString("ko-KR") + "만") + "원"; };
+const wbars = arr => arr.map(([k, w]) => `<div class="wbar"><span>${k}</span><div class="trk"><i style="width:${(w * 100).toFixed(1)}%"></i></div><b class="num">${(w * 100).toFixed(1)}%</b></div>`).join("");
+function pfAlts(p, r) {
+  const owned = c => p.holdings.some(h => h.code === c);
+  let alts = Engine.alternatives(r.s, "similar", {}, 6).filter(a => !owned(a.s.code));
+  if (alts.length < 3) alts = alts.concat(Engine.alternatives(r.s, "best", {}, 10).filter(a => !owned(a.s.code) && !alts.some(x => x.s.code === a.s.code)));
+  return alts.slice(0, 3);
+}
+function pfSimHoldings(p, r, alt) {
+  const s = alt.s, q = r.val / (s.price * fxOf(s));
+  return p.holdings.map(h => h.code === r.s.code ? { code: s.code, qty: s.market === "KR" ? Math.floor(q) : Math.floor(q * 100) / 100, avg: s.price } : h);
+}
+function viewPortfolio() {
+  const p = curPf();
+  const head = `<div class="pf-top">
+    ${state.pfs.length ? `<label class="fld" style="flex:1"><span>고객</span><select data-pfsel>${state.pfs.map(x => `<option value="${x.id}" ${p && x.id === p.id ? "selected" : ""}>${esc(x.client)} (${x.holdings.length}종목)</option>`).join("")}</select></label>` : ""}
+    <button class="btn-sec" data-act="pfnew">+ 고객</button>${p ? `<button class="btn-sec" data-act="pfdel">삭제</button>` : ""}</div>`;
+  if (!p) return head + `<div class="empty"><div class="ic">${ic("cmp", 26)}</div><b>고객 포트폴리오를 만들어 보세요</b><p>보유 종목·수량·평균 매입가를 넣으면<br>수익률, 업종·국가 쏠림, 위험도를 진단하고<br>약한 종목의 교체 효과를 미리 계산합니다</p></div>
+    <p class="note" style="padding:0 4px">기록은 이 기기 브라우저에만 저장됩니다. 민감한 개인정보는 입력하지 마세요.</p>`;
+  return head + `<div class="card"><div class="card-h"><div class="card-t">보유 종목 ${p.holdings.length}</div><div class="card-s">미국 종목 단가는 달러</div></div>
+    ${searchBox("q-pf", "보유 종목 추가 — 종목명·코드", false)}
+    ${p.holdings.length ? `<div class="hold hold-h"><span>종목</span><span>수량</span><span>평균단가</span><span></span></div>` + p.holdings.map(h => { const s = byCode[h.code]; if (!s) return ""; return `<div class="hold"><div><b>${s.name}</b><span class="num">현재 ${money(s, s.price)}</span></div>
+      <input type="number" inputmode="decimal" min="0" step="any" data-pfq="${h.code}" value="${h.qty || ""}" placeholder="수량">
+      <input type="number" inputmode="decimal" min="0" step="any" data-pfa="${h.code}" value="${h.avg || ""}" placeholder="단가">
+      <button data-act="pfrm" data-arg="${h.code}" aria-label="삭제">✕</button></div>`; }).join("") : `<div class="empty-note">위 검색창으로 보유 종목을 추가하세요</div>`}
+  </div>
+  <div id="pf-diag"></div>
+  ${pfLogs(p)}
+  <p class="note" style="padding:0 4px">평가금액은 최신 종가·환율(${USDKRW.toLocaleString("ko-KR")}원/$) 기준이며 미국 종목 매입원가도 현재 환율로 환산한 근사치입니다. 수수료·세금 미반영.</p>`;
+}
+function renderPfDiag() {
+  const el = $("#pf-diag"), p = curPf();
+  if (!el || !p) return;
+  const st = pfStats(p.holdings);
+  if (!st.rows.length) { el.innerHTML = p.holdings.length ? `<div class="card empty-note">수량을 입력하면 진단 결과가 나옵니다</div>` : ""; return; }
+  const flags = pfFlags(st), weak = new Set(pfWeak(st).map(r => r.s.code));
+  let h = `<div class="card">
+    <div class="card-h"><div class="card-t">진단 결과</div><button class="card-s link" data-act="pfcopy">요약 복사</button></div>
+    <div class="pm-grid"><div><span>평가금액</span><b class="num">${krw(st.total)}</b></div><div><span>평가손익</span><b class="num ${ud(st.pnl)}">${st.pnl > 0 ? "+" : ""}${krw(st.pnl)}</b></div><div><span>수익률</span><b class="num ${ud(st.ret)}">${pc(st.ret)}</b></div></div>
+    <div class="pm-grid" style="margin-top:6px"><div><span>평균 종합점수</span><b class="num">${st.score.toFixed(0)}점</b></div><div><span>가중 변동성</span><b class="num">연 ${st.vol.toFixed(0)}%</b></div><div><span>실질 분산 종목</span><b class="num">${st.effN.toFixed(1)}개</b></div></div>
+    <div class="rs-group" style="margin-top:14px">점검 사항 ${flags.length}</div>
+    ${flags.length ? flags.map(t => `<div class="chk"><i class="s">!</i><span>${t}</span></div>`).join("") : `<div class="chk"><i class="h">✓</i><span>특이한 집중·위험 신호가 없습니다</span></div>`}
+    <div class="rs-group">업종 비중</div>${wbars(st.sectors)}
+    <div class="rs-group">국가 비중</div>${wbars(st.countries)}
+  </div>
+  <div class="card"><div class="card-h"><div class="card-t">종목별 진단</div><div class="card-s">비중순 · 교체 시뮬레이션</div></div>`;
+  for (const r of st.rows) {
+    const v = Engine.sellCheck(r.s).verdict;
+    h += `<div class="pf-row ${weak.has(r.s.code) ? "weak" : ""}">
+      <div class="row-main" data-act="buy" data-arg="${r.s.code}"><b>${r.s.name}</b><span class="num">비중 ${(r.w * 100).toFixed(1)}% · 수익률 <em class="${ud(r.ret)}">${pc(r.ret)}</em> · ${v.t}</span></div>
+      ${sbadge(r.sc)}<button class="sim-btn ${state.pfSim === r.s.code ? "on" : ""}" data-act="pfsim" data-arg="${r.s.code}">교체<br>시뮬</button></div>`;
+    if (state.pfSim === r.s.code) h += pfSimPanel(p, st, r);
+  }
+  el.innerHTML = h + `</div>`;
+}
+function pfSimPanel(p, st, r) {
+  const alts = pfAlts(p, r);
+  if (!alts.length) return `<div class="sim empty-note">대체 후보가 없습니다</div>`;
+  const alt = alts[state.pfSimAlt] || alts[0];
+  const after = pfStats(pfSimHoldings(p, r, alt));
+  const line = (l, a, b, fmt, better) => `<div class="sim-r"><span>${l}</span><b class="num">${fmt(a)}</b><i>→</i><b class="num ${better(a, b) ? "better" : ""}">${fmt(b)}</b></div>`;
+  return `<div class="sim">
+    <div class="sim-t">${r.s.name} → 대체 후보</div>
+    <div class="chips" style="margin:6px 0 8px">${alts.map((a, i) => `<button class="chip ${a === alt ? "on" : ""}" data-act="pfalt" data-arg="${i}">${a.s.name} ${a.sc.total}점</button>`).join("")}</div>
+    ${line("평균 종합점수", st.score, after.score, v => v.toFixed(0) + "점", (a, b) => b > a)}
+    ${line("가중 변동성", st.vol, after.vol, v => "연 " + v.toFixed(0) + "%", (a, b) => b < a)}
+    ${line("최대 업종 비중", st.sectors[0][1], after.sectors[0][1], v => (v * 100).toFixed(0) + "%", (a, b) => b < a)}
+    ${line("실질 분산 종목", st.effN, after.effN, v => v.toFixed(1) + "개", (a, b) => b > a)}
+    ${alt.reasons.length ? `<div class="alt-why">${alt.reasons.map(x => `<div><b>${x.t}</b> — ${x.d}</div>`).join("")}</div>` : ""}
+    <button class="btn-pri" style="margin-top:10px" data-act="pfapply">이 교체안을 포트폴리오에 반영</button>
+    <p class="note">같은 평가금액으로 교체했다고 가정한 계산입니다 (수수료·세금·호가 미반영).</p>
+  </div>`;
+}
+function pfApplySim() {
+  const p = curPf(), st = pfStats(p.holdings), r = st.rows.find(x => x.s.code === state.pfSim);
+  if (!r) return;
+  const alt = pfAlts(p, r)[state.pfSimAlt] || pfAlts(p, r)[0];
+  if (!alt || !confirm(`${r.s.name}을(를) ${alt.s.name}(으)로 교체한 것으로 포트폴리오를 수정할까요?\n(실제 주문이 아니라 이 앱의 기록만 바뀝니다)`)) return;
+  p.holdings = pfSimHoldings(p, r, alt);
+  state.pfSim = null; pfSave(); render();
+  toast(`${alt.s.name}(으)로 교체 반영`);
+}
+function pfLogs(p) {
+  const ls = state.logs.filter(l => l.client === p.client).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 5);
+  return `<div class="card"><div class="card-h"><div class="card-t">${esc(p.client)} 상담 이력 ${ls.length}</div><button class="card-s link" data-act="logclient" data-arg="${esc(p.client)}">+ 상담 기록</button></div>
+    ${ls.length ? ls.map(logCard).join("") : `<div class="empty-note">이 고객의 상담 기록이 없습니다</div>`}</div>`;
+}
+function pfText() {
+  const p = curPf(), st = pfStats(p.holdings), flags = pfFlags(st);
+  return [`[포트폴리오 진단] ${p.client} · ${DATA_ASOF} 기준`,
+    `평가금액 ${krw(st.total)} · 평가손익 ${st.pnl > 0 ? "+" : ""}${krw(st.pnl)} · 수익률 ${pc(st.ret)} · 평균 점수 ${st.score.toFixed(0)}점 · 가중 변동성 연 ${st.vol.toFixed(0)}% · 실질 분산 ${st.effN.toFixed(1)}개`,
+    "", "■ 보유 종목", ...st.rows.map(r => `- ${r.s.name} ${(r.w * 100).toFixed(1)}% · 수익률 ${pc(r.ret)} · 점수 ${r.sc}`),
+    "", "■ 업종 비중: " + st.sectors.map(([k, w]) => `${k} ${(w * 100).toFixed(0)}%`).join(", "),
+    "", "■ 점검 사항", ...(flags.length ? flags.map(f => "- " + f) : ["- 특이 사항 없음"]),
+    "", "※ 공개 데이터 기반 참고자료이며 투자 권유가 아닙니다. 수수료·세금 미반영."].join("\n");
+}
+
 
 /* ── 상담 요약 ── */
 function summaryText(s) {
@@ -628,6 +969,7 @@ function summaryText(s) {
     `■ 투자 포인트`, ...(rs.pros.length ? rs.pros.map(r => `- ${r.t}: ${r.d}`) : ["- 뚜렷한 강점 없음"]),
     ``,
     `■ 리스크`, ...(rs.cons.length ? rs.cons.map(r => `- ${r.t}: ${r.d}`) : ["- 특이 리스크 없음"]),
+    ...techSummary(s),
     ...(nd && nd.n ? [``, `■ 최근 뉴스·공시 (${nd.tone}${nd.topics.length ? ", " + nd.topics.join("·") : ""})`, ...nd.news.slice(0, 3).map(n => `- ${n.t}`)] : []),
     ``,
     `※ 본 자료는 공개 데이터 기반 참고자료로 투자 권유가 아니며, 투자 결과의 책임은 투자자 본인에게 있습니다. 과거 수익률이 미래 수익을 보장하지 않습니다.`,
@@ -641,6 +983,7 @@ function render() {
   $("#v-" + state.view).innerHTML = VIEWS[state.view]();
   for (const id of Object.keys(PICKERS)) bindSearch(id, PICKERS[id]);
   if (state.view === "screen") renderScreenerResults();
+  if ($("#pf-diag")) renderPfDiag();
   const tray = $("#tray");
   tray.innerHTML = state.cmp.length && state.view !== "my" ? `<button data-act="myt" data-arg="cmp">${ic("cmp", 16)} 비교함 ${state.cmp.length}/4 · 비교하기 ›</button>` : "";
   const lq = $("#log-q");
@@ -679,6 +1022,18 @@ const ACTIONS = {
   cmpcopy: () => copyText(compareText(), "비교 요약을 복사했습니다"),
   myt: a => { state.myTab = a; state.view === "my" ? render() : go("my"); },
   logadd: a => openLogForm(a),
+  logclient: a => openLogForm("", null, a),
+  calscope: a => { state.calScope = a; render(); },
+  perfmkt: a => { state.perfMkt = a; render(); },
+  perfbase: a => { state.perfBase = a; render(); },
+  pfnew: () => pfNew(),
+  pfsel: a => { state.pfSel = a; store.set("pfSel", a); state.pfSim = null; render(); },
+  pfdel: () => pfDelete(),
+  pfrm: a => { const pf = curPf(); pf.holdings = pf.holdings.filter(h => h.code !== a); pfSave(); render(); },
+  pfsim: a => { state.pfSim = state.pfSim === a ? null : a; state.pfSimAlt = 0; render(); },
+  pfalt: a => { state.pfSimAlt = +a; render(); },
+  pfapply: () => pfApplySim(),
+  pfcopy: () => copyText(pfText(), "포트폴리오 진단 요약을 복사했습니다"),
   logedit: a => openLogForm("", a),
   logsave: a => saveLogForm(a || null),
   logdone: a => { const l = state.logs.find(l => l.id === a); if (l) { l.done = true; saveLogs(); toast("연락 완료로 표시했습니다"); render(); } },
@@ -694,6 +1049,13 @@ document.addEventListener("click", e => {
 });
 document.addEventListener("change", e => {
   const t = e.target;
+  if (t.dataset.pfsel !== undefined) { ACTIONS.pfsel(t.value); return; }
+  if (t.dataset.perfbase !== undefined) { state.perfBase = t.value; render(); return; }
+  if (t.dataset.pfq || t.dataset.pfa) {
+    const h = curPf()?.holdings.find(h => h.code === (t.dataset.pfq || t.dataset.pfa));
+    if (h) { h[t.dataset.pfq ? "qty" : "avg"] = Math.max(0, parseFloat(t.value) || 0); pfSave(); state.pfSim = null; renderPfDiag(); }
+    return;
+  }
   if (t.dataset.scr) { state.scr[t.dataset.scr] = t.value; renderScreenerResults(); }
 });
 document.addEventListener("input", e => {
@@ -708,3 +1070,4 @@ document.addEventListener("input", e => {
 })();
 $("#ticker").innerHTML = MARKET.map(m => `<div class="tk"><b>${m.name}</b><span class="v num">${m.value.toLocaleString("ko-KR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span><span class="c num ${ud(m.chg)}">${pc(m.chg, 2)}</span></div>`).join("");
 render();
+loadPerfSnaps();

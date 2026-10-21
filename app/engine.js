@@ -3,8 +3,9 @@
 // 5개 팩터 각 0~100점 → 가중평균 = 종합점수
 //   가치(밸류에이션) · 성장(이익/매출) · 퀄리티(수익성/재무) · 모멘텀(가격추세) · 컨센서스(목표가·투자의견)
 // 위험등급: 1년 일간 변동성(연환산) 기준 5단계
+// makeEngine(종목배열): 과거 스냅샷도 같은 규칙으로 채점할 수 있도록 데이터셋별 엔진을 만든다 (추천 성과 추적용)
 // ─────────────────────────────────────────────────────────────
-const Engine = (() => {
+function makeEngine(STOCKS) {
   const clamp = (v, lo = 0, hi = 100) => Math.max(lo, Math.min(hi, v));
   const avg = a => a.reduce((s, x) => s + x, 0) / a.length;
   const median = a => { const s = [...a].sort((x, y) => x - y); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
@@ -38,6 +39,51 @@ const Engine = (() => {
   const rangePos = s => s.hi52 > s.lo52 ? (s.price - s.lo52) / (s.hi52 - s.lo52) : 0.5;
   const recLabel = r => !ok(r) ? "-" : r <= 1.5 ? "강력매수" : r <= 2.5 ? "매수" : r <= 3.5 ? "중립" : r <= 4.5 ? "매도" : "강력매도";
 
+  // 수급: 20일 외국인+기관 순매수 금액 / 시가총액 (%)
+  const flowPct = s => s.flow && s.mcap ? (s.flow.f20 + s.flow.o20) / s.mcap * 100 : null;
+  const flowTxt = v => (v > 0 ? "+" : "") + Math.round(v).toLocaleString("ko-KR") + "억";
+
+  // 기술적 지표: 이동평균(20·60·120), RSI(14), 골든/데드크로스(20일선 vs 60일선, 최근 15거래일)
+  const techCache = new Map();
+  function tech(s) {
+    if (!s.hist || s.hist.length < 30) return null;
+    if (techCache.has(s.code)) return techCache.get(s.code);
+    const h = [...s.hist]; h[h.length - 1] = s.price;
+    const ma = n => h.map((_, i) => i + 1 >= n ? avg(h.slice(i + 1 - n, i + 1)) : null);
+    const m20 = ma(20), m60 = ma(60), m120 = ma(120), L = h.length - 1;
+    let g = 0, l = 0;
+    for (let i = 1; i <= 14; i++) { const d = h[i] - h[i - 1]; d > 0 ? g += d : l -= d; }
+    g /= 14; l /= 14;
+    for (let i = 15; i <= L; i++) { const d = h[i] - h[i - 1]; g = (g * 13 + Math.max(d, 0)) / 14; l = (l * 13 + Math.max(-d, 0)) / 14; }
+    const rsi = l === 0 ? 100 : 100 - 100 / (1 + g / l);
+    let cross = null;
+    for (let i = L; i > L - 15 && i > 0; i--) {
+      if (m20[i] == null || m60[i] == null || m20[i - 1] == null || m60[i - 1] == null) break;
+      const now = m20[i] - m60[i], prev = m20[i - 1] - m60[i - 1];
+      if (now > 0 && prev <= 0) { cross = { type: "골든크로스", ago: L - i }; break; }
+      if (now < 0 && prev >= 0) { cross = { type: "데드크로스", ago: L - i }; break; }
+    }
+    const p = h[L], a = m20[L], b = m60[L], c = m120[L];
+    const align = c == null ? (a > b ? "단기 상승" : "단기 하락") : p > a && a > b && b > c ? "정배열" : p < a && a < b && b < c ? "역배열" : "혼조";
+    const r = { m20, m60, m120, rsi, cross, align, disp: a ? p / a * 100 : null, ma: { 20: a, 60: b, 120: c } };
+    techCache.set(s.code, r);
+    return r;
+  }
+
+  // 다가오는 일정: 실적 발표·배당락 (오늘 ~ days일 이내)
+  function events(list, days = 30) {
+    const now = new Date(); now.setHours(0, 0, 0, 0);
+    const out = [];
+    for (const s of list) {
+      for (const [type, d] of [["실적 발표", s.earn], ["배당락", s.exdiv]]) {
+        if (!d) continue;
+        const dd = Math.round((new Date(d + "T00:00:00") - now) / 864e5);
+        if (dd >= 0 && dd <= days) out.push({ s, type, date: d, dday: dd, est: type === "실적 발표" && s.earnEst });
+      }
+    }
+    return out.sort((a, b) => a.dday - b.dday);
+  }
+
   function factors(s) {
     // 가치: 섹터 대비 상대 PER 60% + 절대 PER 40%, PBR 1배 미만 가산
     let value;
@@ -64,6 +110,8 @@ const Engine = (() => {
     // 모멘텀: 3M·6M 수익률 + 52주 위치, 1개월 급등 시 과열 감점
     let momentum = 0.35 * clamp(50 + s.r3m * 1.5) + 0.35 * clamp(50 + s.r6m) + 0.3 * rangePos(s) * 100;
     if (s.r1m > 15) momentum -= (s.r1m - 15) * 1.2;
+    const fp = flowPct(s);
+    if (ok(fp)) momentum = 0.8 * momentum + 0.2 * clamp(50 + fp * 40);  // 국내: 20일 외국인·기관 수급 20% 반영
     momentum = clamp(momentum);
     // 컨센서스: 목표가 업사이드 70% + 투자의견(1=강력매수~5=강력매도) 30%. 커버리지 3곳 미만은 중립 쪽으로 수축
     const up = upsideOf(s);
@@ -117,6 +165,11 @@ const Engine = (() => {
     if (ok(up) && up >= 15 && up <= 60 && s.nAnalyst >= 3) pros.push({ t: "목표가 상승여력", d: `애널리스트 ${s.nAnalyst}명 평균 목표가 ${money(s, s.target)} 대비 ${pct(up)}` });
     if (ok(s.rec) && s.rec <= 1.8 && s.nAnalyst >= 5) pros.push({ t: "애널리스트 강한 매수 의견", d: `투자의견 평균 ${s.rec.toFixed(1)}점(1=강력매수, ${s.nAnalyst}명)` });
     if (s.div >= 3.5) pros.push({ t: "고배당", d: `배당수익률 ${s.div.toFixed(1)}%로 하방 방어력` });
+    const fl = s.flow, tc = tech(s);
+    if (fl && fl.f5 > 0 && fl.o5 > 0) pros.push({ t: "외국인·기관 동반 순매수", d: `최근 5일 외국인 ${flowTxt(fl.f5)} · 기관 ${flowTxt(fl.o5)}${fl.fstreak >= 3 ? `, 외국인 ${fl.fstreak}일 연속 순매수` : ""}` });
+    else if (fl && fl.fstreak >= 5) pros.push({ t: "외국인 연속 순매수", d: `${fl.fstreak}거래일 연속, 5일 누적 ${flowTxt(fl.f5)}` });
+    if (tc && tc.cross && tc.cross.type === "골든크로스") pros.push({ t: "골든크로스", d: `${tc.cross.ago ? tc.cross.ago + "거래일 전" : "오늘"} 20일선이 60일선 상향 돌파` });
+    else if (tc && tc.align === "정배열") pros.push({ t: "이동평균 정배열", d: "주가 > 20일 > 60일 > 120일선 — 상승 추세 유지" });
 
     if (!(s.per > 0)) cons.push({ t: "적자 상태", d: "최근 4분기 순이익 적자로 PER 산출 불가" });
     else if (s.per > sp * 1.4) cons.push({ t: "밸류에이션 부담", d: `PER ${s.per}배, ${secName(s)} 중앙값 대비 ${((s.per / sp - 1) * 100).toFixed(0)}% 할증` });
@@ -128,8 +181,11 @@ const Engine = (() => {
     if (ok(up) && up < 3) cons.push({ t: "목표가 도달", d: `평균 목표가 대비 ${pct(up)} — 컨센서스 상향 여부 확인 필요` });
     if (ok(s.debt) && s.debt >= 150) cons.push({ t: "재무 레버리지", d: `부채/자본(D/E) ${s.debt}%` });
     if (riskTier(s) >= 4) cons.push({ t: "높은 변동성", d: `연 변동성 ${s.vol}% — 위험등급 '${riskLabel(s)}'` });
+    if (fl && fl.f5 < 0 && fl.o5 < 0) cons.push({ t: "외국인·기관 동반 순매도", d: `최근 5일 외국인 ${flowTxt(fl.f5)} · 기관 ${flowTxt(fl.o5)}` });
+    if (tc && tc.rsi >= 70) cons.push({ t: "RSI 과열", d: `RSI ${tc.rsi.toFixed(0)} — 단기 과매수 구간` });
+    if (tc && tc.cross && tc.cross.type === "데드크로스") cons.push({ t: "데드크로스", d: `${tc.cross.ago ? tc.cross.ago + "거래일 전" : "오늘"} 20일선이 60일선 하향 이탈` });
 
-    return { pros: pros.slice(0, 5), cons: cons.slice(0, 4) };
+    return { pros: pros.slice(0, 6), cons: cons.slice(0, 5) };
   }
 
   // 매도 점검: 매도 근거 / 보유 근거
@@ -148,6 +204,13 @@ const Engine = (() => {
     const nd = newsDigest(s.code);
     if (nd.tone === "부정 우세") sell.push(`최근 뉴스·공시 부정 키워드 우세(부정 ${nd.neg} / 긍정 ${nd.pos})`);
     if (nd.tone === "긍정 우세") hold.push(`최근 뉴스·공시 긍정 키워드 우세(긍정 ${nd.pos} / 부정 ${nd.neg})`);
+    const fl = s.flow, tc = tech(s);
+    if (fl && fl.f5 < 0 && fl.o5 < 0) sell.push(`외국인·기관 5일 동반 순매도 (외국인 ${flowTxt(fl.f5)}, 기관 ${flowTxt(fl.o5)})`);
+    if (fl && fl.f5 > 0 && fl.o5 > 0) hold.push(`외국인·기관 5일 동반 순매수 (외국인 ${flowTxt(fl.f5)}, 기관 ${flowTxt(fl.o5)})`);
+    if (tc && tc.rsi >= 70) sell.push(`RSI ${tc.rsi.toFixed(0)} 과매수 — 분할 차익실현 고려`);
+    if (tc && tc.rsi <= 30) hold.push(`RSI ${tc.rsi.toFixed(0)} 과매도 — 저점 매도 주의`);
+    if (tc && tc.cross && tc.cross.type === "데드크로스") sell.push(`데드크로스 발생 (${tc.cross.ago}거래일 전)`);
+    for (const e of events([s], 14)) hold.push(`${e.type} D-${e.dday} (${e.date}) — 일정 전후 변동성 유의`);
     if (total >= 68) hold.push(`종합점수 ${total}점으로 상위권 — 전량 매도보다 비중 조절 검토`);
     if (f.growth >= 75) hold.push("이익·매출 고성장 지속");
     if (ok(up) && up >= 15) hold.push(`평균 목표가 대비 ${pct(up)} 여력 잔존${up > 60 ? " (괴리 과대, 하향 가능성 유의)" : ""}`);
@@ -232,16 +295,21 @@ const Engine = (() => {
       d1: avg(g.map(s => s.chg)), up: g.filter(s => s.chg > 0).length,
       m1: avg(g.map(s => s.r1m)), sc: avg(g.map(s => score(s).total)),
       picks: g.map(s => ({ s, t: score(s).total })).sort((a, b) => b.t - a.t).slice(0, 3).map(o => o.s),
+      f5: g.reduce((t, s) => t + (s.flow ? s.flow.f5 + s.flow.o5 : 0), 0),
+      fp: avg(g.map(s => s.flow && s.mcap ? (s.flow.f5 + s.flow.o5) / s.mcap * 100 : 0)),
     }));
+    const hasFlow = pool.some(s => s.flow);
     const z = k => { const v = secs.map(o => o[k]), m = avg(v), sd = Math.sqrt(avg(v.map(x => (x - m) ** 2))) || 1; secs.forEach(o => o["z_" + k] = (o[k] - m) / sd); };
     secs.forEach(o => o.br = o.up / o.n);
-    ["d1", "br", "m1", "sc"].forEach(z);
+    ["d1", "br", "m1", "sc", "fp"].forEach(z);
     secs.forEach(o => {
-      o.fit = 0.25 * o.z_d1 + 0.15 * o.z_br + 0.2 * o.z_m1 + 0.4 * o.z_sc;
+      o.fit = hasFlow ? 0.2 * o.z_d1 + 0.1 * o.z_br + 0.15 * o.z_m1 + 0.35 * o.z_sc + 0.2 * o.z_fp
+                      : 0.25 * o.z_d1 + 0.15 * o.z_br + 0.2 * o.z_m1 + 0.4 * o.z_sc;
       const why = [];
       if (o.d1 > 0.5) why.push(`전일 평균 ${pct(o.d1)}, ${o.n}종목 중 ${o.up}개 상승`);
       else if (o.d1 < -0.5) why.push(`전일 ${pct(o.d1)} 조정 — 분할 매수 기회 여부 점검`);
       if (o.m1 > 3) why.push(`1개월 추세 ${pct(o.m1)}로 자금 유입 지속`);
+      if (hasFlow && Math.abs(o.f5) >= 100) why.push(`외국인·기관 5일 ${o.f5 > 0 ? "순매수" : "순매도"} ${flowTxt(o.f5)}`);
       if (o.sc >= 65) why.push(`업종 평균 종합점수 ${o.sc.toFixed(0)}점으로 펀더멘털 양호`);
       if (!why.length) why.push(`업종 평균 종합점수 ${o.sc.toFixed(0)}점, 1개월 ${pct(o.m1)}`);
       o.why = why;
@@ -251,7 +319,8 @@ const Engine = (() => {
     const avgChg = avg(pool.map(s => s.chg));
     const byD1 = [...secs].sort((a, b) => b.d1 - a.d1);
     const mood = avgChg > 1 && up > dn * 1.5 ? "강세" : avgChg < -1 && dn > up * 1.5 ? "약세" : avgChg >= 0 ? "혼조 속 강보합" : "혼조 속 약보합";
-    return { top: secs.slice(0, 3), all: secs, up, dn, n: pool.length, avgChg, mood, best: byD1[0], worst: byD1[byD1.length - 1] };
+    const flowTop = hasFlow ? [...secs].sort((a, b) => b.f5 - a.f5)[0] : null;
+    return { top: secs.slice(0, 3), all: secs, up, dn, hasFlow, flowTop, n: pool.length, avgChg, mood, best: byD1[0], worst: byD1[byD1.length - 1] };
   }
 
   // 조건검색
@@ -268,5 +337,6 @@ const Engine = (() => {
   }
 
   return { score, grade, ranked, rankOf, buyReasons, sellCheck, alternatives, screen, upsideOf, rangePos, sectorPer, recLabel,
-    riskTier, riskLabel, money, RISK, newsDigest, discTag, marketBrief, FACTOR_LABEL, WEIGHTS };
-})();
+    riskTier, riskLabel, money, RISK, newsDigest, discTag, marketBrief, flowPct, flowTxt, tech, events, FACTOR_LABEL, WEIGHTS };
+}
+const Engine = makeEngine(STOCKS);

@@ -465,3 +465,10 @@ a.news:hover b{color:var(--brand)}
 .logo{white-space:nowrap}
 .hdr-time{white-space:nowrap;text-align:right;line-height:1.35}
 @media (max-width:420px){.logo small{display:none}.hdr-time{font-size:10.5px}}
+
+/* ── 새로고침 버튼 ── */
+.hdr-right{display:flex;align-items:center;gap:8px}
+.refresh-btn{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;color:#fff;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.18);flex:none}
+.refresh-btn:active{background:rgba(255,255,255,.25)}
+.refresh-btn.spin svg{animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}

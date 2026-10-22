@@ -844,6 +844,30 @@ function liveBadge() {
   el.innerHTML = `${liveTime ? `<b class="live-dot">● 실시간 ${liveTime}</b>` : `<b class="stale">시세 연결 끊김</b>`}<br>점수 ${DATA_ASOF.slice(5)} 기준`;
 }
 
+/* ── 새로고침 버튼: 실시간 시세 즉시 갱신 + 새 데이터가 올라왔으면 바로 교체 ── */
+let refreshing = false;
+async function refreshAll() {
+  if (refreshing) return;
+  refreshing = true;
+  const btn = $("#refresh");
+  btn.classList.add("spin");
+  try {
+    if (LIVE) await liveTick();
+    const t = await (await fetch("data.js?t=" + Date.now(), { cache: "no-store" })).text();
+    const m = t.match(/DATA_ASOF = "([^"]+)"/);
+    if (m && m[1] !== DATA_ASOF) {
+      toast(`새 데이터(${m[1].slice(5)} 기준)로 바꿉니다`);
+      setTimeout(() => location.reload(), 600);
+      return;
+    }
+    toast(LIVE ? `시세 갱신 완료 · 점수는 최신(${DATA_ASOF.slice(5)} 기준)` : `이미 최신 데이터입니다 (${DATA_ASOF.slice(5)} 기준)`);
+  } catch {
+    toast("인터넷 연결을 확인해 주세요");
+  } finally {
+    setTimeout(() => { btn.classList.remove("spin"); refreshing = false; }, 500);
+  }
+}
+
 /* ── router / render ── */
 const VIEWS = { home: viewHome, buy: viewBuy, sell: viewSell, screen: viewScreener, my: viewMy };
 function render() {
@@ -890,6 +914,7 @@ const ACTIONS = {
   calscope: a => { state.calScope = a; render(); },
   perfmkt: a => { state.perfMkt = a; render(); },
   perfbase: a => { state.perfBase = a; render(); },
+  refresh: () => refreshAll(),
   sheetclose: () => $("#sheet").classList.remove("on"),
 };
 document.addEventListener("click", e => {
@@ -911,7 +936,7 @@ document.addEventListener("input", e => {
 // 데이터 신선도: 마지막 수집 후 36시간 이상이면 경고
 (() => {
   const age = (Date.now() - new Date(DATA_ASOF.replace(" ", "T"))) / 36e5;
-  $("#asof").innerHTML = `${DATA_ASOF} 기준${age > 36 ? ` <b class="stale">· ${Math.floor(age / 24)}일 전 데이터</b>` : ""}`;
+  $("#asof").innerHTML = `${DATA_ASOF.slice(5)} 기준${age > 36 ? ` <b class="stale">· ${Math.floor(age / 24)}일 전 데이터</b>` : ""}`;
 })();
 $("#ticker").innerHTML = MARKET.map(m => `<div class="tk"><b>${m.name}</b><span class="v num">${m.value.toLocaleString("ko-KR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span><span class="c num ${ud(m.chg)}">${pc(m.chg, 2)}</span></div>`).join("");
 render();

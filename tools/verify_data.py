@@ -35,7 +35,18 @@ def get(url):
     return json.loads(urllib.request.urlopen(r, timeout=15).read().decode("utf-8"))
 
 
-def other_source(s):
+def other_source(s, tries=3):
+    """비교 출처가 잠깐 막히면(요청 과다) 잠시 쉬었다 다시 시도"""
+    import time
+    for i in range(tries):
+        r = _other_source(s)
+        if not r.get("err") or "매칭 실패" in r["err"]:
+            return r
+        time.sleep(2 * (i + 1))
+    return r
+
+
+def _other_source(s):
     try:
         if s["market"] == "KR":
             # 앱이 기록한 심볼이 아니라 .KS/.KQ 중 최근 거래 중인 심볼을 독립적으로 찾는다
@@ -70,7 +81,7 @@ def other_source(s):
 
 def main():
     stocks, asof = load()
-    with ThreadPoolExecutor(max_workers=6) as ex:
+    with ThreadPoolExecutor(max_workers=4) as ex:
         ref = dict(zip([s["code"] for s in stocks], ex.map(other_source, stocks)))
 
     issues, notes, diffs = [], [], []

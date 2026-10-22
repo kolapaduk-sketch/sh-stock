@@ -126,6 +126,21 @@ def main():
 
     if len(diffs) < len(stocks) * 0.5:  # 네트워크 장애 등으로 대조가 거의 안 됐으면 '통과'로 보이지 않게
         issues.insert(0, f"[대조 실패] 현재가를 {len(diffs)}/{len(stocks)}종목만 대조 — 인터넷 연결 또는 출처 접속 문제, 데이터 신뢰 불가")
+    # 지수·환율 대조: 앱 값(네이버) ↔ Yahoo 당일 기준. 방향(상승/하락)이 반대면 경고
+    try:
+        t = (ROOT / "app" / "data.js").read_text(encoding="utf-8")
+        market = json.loads(re.search(r"const MARKET = (\[.*?\]);", t).group(1))
+        ysym = {"KOSPI": "^KS11", "KOSDAQ": "^KQ11", "S&P500": "^GSPC", "NASDAQ": "^IXIC", "USD/KRW": "KRW=X"}
+        for m in market:
+            y = get(f"https://query1.finance.yahoo.com/v8/finance/chart/{ysym[m['name']]}?range=1d&interval=5m")["chart"]["result"][0]["meta"]
+            yp, yprev = y["regularMarketPrice"], y.get("chartPreviousClose")
+            ychg = (yp / yprev - 1) * 100 if yprev else None
+            if abs(m["value"] / yp - 1) > 0.015:
+                issues.append(f"[지수 불일치] {m['name']}: 앱 {m['value']:,} vs Yahoo {yp:,.2f}")
+            elif ychg is not None and abs(m["chg"]) > 0.3 and abs(ychg) > 0.3 and (m["chg"] > 0) != (ychg > 0):
+                issues.append(f"[지수 방향 반대] {m['name']}: 앱 {m['chg']:+.2f}% vs Yahoo {ychg:+.2f}%")
+    except Exception as e:
+        notes.append(f"[지수 대조 불가] {str(e)[:60]}")
     miss = {k: sum(1 for s in stocks if s.get(k) is None) for k in ("per", "fper", "pbr", "roe", "opm", "debt", "epsG", "revG", "target", "rec")}
     diffs.sort()
     kr, us = sum(s["market"] == "KR" for s in stocks), sum(s["market"] == "US" for s in stocks)

@@ -1,0 +1,61 @@
+"""
+지수·환율 (수집기·실시간 서버 공용)
+  국내 지수: 네이버 증권 (거래소 공식 값, 등락률 포함)
+  미국 지수: 네이버 증권 해외지수
+  원/달러:   네이버 증권 (하나은행 고시)
+네이버 실패 시 Yahoo 로 대체하되, 전일 종가는 반드시 range=1d 의 chartPreviousClose 를 쓴다
+(Yahoo 일봉의 국내 지수 전일 종가가 틀리게 들어오는 경우가 있었음 — 2026-10-22 코스피 방향이 반대로 표시된 원인)
+"""
+import json, urllib.request
+
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130 Safari/537.36"
+num = lambda v: None if v in (None, "", "-", "N/A") else float(str(v).replace(",", "").replace("+", ""))
+
+
+def _get(url):
+    r = urllib.request.Request(url, headers={"User-Agent": UA})
+    return json.loads(urllib.request.urlopen(r, timeout=10).read().decode("utf-8"))
+
+
+def _yahoo(sym, name):
+    m = _get(f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?range=1d&interval=5m")["chart"]["result"][0]["meta"]
+    p, prev = m["regularMarketPrice"], m.get("chartPreviousClose") or m.get("previousClose")
+    return {"name": name, "value": round(p, 2), "chg": round((p / prev - 1) * 100, 2), "src": "Yahoo"}
+
+
+def fetch_indices():
+    out = {}
+    try:
+        for x in _get("https://polling.finance.naver.com/api/realtime/domestic/index/KOSPI,KOSDAQ").get("datas") or []:
+            out[x["itemCode"]] = {"name": x["itemCode"], "value": num(x["closePrice"]), "chg": num(x["fluctuationsRatio"]),
+                                  "status": x.get("marketStatus"), "time": (x.get("localTradedAt") or "")[:16], "src": "네이버"}
+    except Exception:
+        pass
+    try:
+        names = {".INX": "S&P500", ".IXIC": "NASDAQ"}
+        for x in _get("https://polling.finance.naver.com/api/realtime/worldstock/index/.INX,.IXIC").get("datas") or []:
+            n = names.get(x.get("reutersCode"))
+            if n:
+                out[n] = {"name": n, "value": num(x["closePrice"]), "chg": num(x["fluctuationsRatio"]),
+                          "status": x.get("marketStatus"), "time": (x.get("localTradedAt") or "")[:16], "src": "네이버"}
+    except Exception:
+        pass
+    try:
+        e = _get("https://api.stock.naver.com/marketindex/exchange/FX_USDKRW")["exchangeInfo"]
+        out["USD/KRW"] = {"name": "USD/KRW", "value": num(e["closePrice"]), "chg": num(e["fluctuationsRatio"]),
+                          "time": (e.get("localTradedAt") or "")[:16], "src": "네이버"}
+    except Exception:
+        pass
+    for sym, n in (("^KS11", "KOSPI"), ("^KQ11", "KOSDAQ"), ("^GSPC", "S&P500"), ("^IXIC", "NASDAQ"), ("KRW=X", "USD/KRW")):
+        if n not in out or out[n]["value"] is None:
+            try:
+                out[n] = _yahoo(sym, n)
+            except Exception:
+                pass
+    order = ["KOSPI", "KOSDAQ", "S&P500", "NASDAQ", "USD/KRW"]
+    return [out[n] for n in order if n in out]
+
+
+if __name__ == "__main__":
+    for x in fetch_indices():
+        print(x)

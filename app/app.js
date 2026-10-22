@@ -209,6 +209,13 @@ function verifyCard() {
   </div>`;
 }
 
+/* ── 지수 표시 (헤더 티커 · 브리핑 박스 공용) ── */
+const idxCell = m => `<span>${m.name === "USD/KRW" ? "원/달러" : m.name}</span><b class="num">${m.value.toLocaleString("ko-KR", { maximumFractionDigits: m.name === "USD/KRW" ? 1 : 2 })}</b><em class="num ${ud(m.chg)}">${pc(m.chg, 2)}</em>`;
+function renderTicker() {
+  $("#ticker").innerHTML = MARKET.map(m => `<div class="tk"><b>${m.name}</b><span class="v num">${m.value.toLocaleString("ko-KR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span><span class="c num ${ud(m.chg)}">${pc(m.chg, 2)}</span></div>`).join("");
+  document.querySelectorAll("[data-idx]").forEach(e => { const m = MARKET.find(x => x.name === e.dataset.idx); if (m) e.innerHTML = idxCell(m); });
+}
+
 /* ── 전일 시장 분석 ── */
 function briefCard() {
   const mk = state.briefMkt, b = Engine.marketBrief(mk);
@@ -218,8 +225,7 @@ function briefCard() {
   return `<section class="brief">
     <div class="brief-h"><div><b>전일 시장 분석</b><span>${mk === "KR" ? "국내 정규장 마감" : "미국 정규장 마감"} · ${DATA_ASOF} 수집</span></div>
       ${seg([["KR", "국내"], ["US", "미국"]], mk, "briefmkt", "seg-dark")}</div>
-    <div class="idx">${idx.map(m => `<div><span>${m.name}</span><b class="num">${m.value.toLocaleString("ko-KR", { maximumFractionDigits: 2 })}</b><em class="num ${ud(m.chg)}">${pc(m.chg, 2)}</em></div>`).join("")}
-      ${fx ? `<div><span>원/달러</span><b class="num">${fx.value.toLocaleString("ko-KR", { maximumFractionDigits: 1 })}</b><em class="num ${ud(fx.chg)}">${pc(fx.chg, 2)}</em></div>` : ""}</div>
+    <div class="idx">${idx.concat(fx ? [fx] : []).map(m => `<div data-idx="${m.name}">${idxCell(m)}</div>`).join("")}</div>
     <p class="brief-sum">${mk === "KR" ? "국내" : "미국"} 시장은 <b class="${moodCls}">${b.mood}</b>. 분석 대상 ${b.n}종목 중 상승 <b class="up">${b.up}</b> · 하락 <b class="down">${b.dn}</b>, 평균 <b class="${ud(b.avgChg)}">${pc(b.avgChg)}</b>.
       가장 강한 업종은 <b>${b.best.sector}</b>(${pc(b.best.d1)}), 가장 약한 업종은 <b>${b.worst.sector}</b>(${pc(b.worst.d1)})입니다.</p>
     <div class="brief-t">매수 가망 업종 TOP 3</div>
@@ -829,10 +835,24 @@ async function liveTick() {
       }
       liveTime = d.time;
       applyLive();
+      liveIndices();
       if (state.view === "buy" && state.period === "1D" && state.buy) loadIntraday(state.buy, true);
     } catch { liveTime = null; }
   }
   liveBadge();
+}
+let idxAt = 0;
+async function liveIndices() {
+  if (Date.now() - idxAt < 14000) return;   // 지수는 15초에 한 번
+  idxAt = Date.now();
+  try {
+    const d = await (await fetch("api/indices", { cache: "no-store" })).json();
+    for (const n of d.indices || []) {
+      const m = MARKET.find(x => x.name === n.name);
+      if (m && n.value != null) { m.value = n.value; m.chg = n.chg; } else if (!m && n.value != null) MARKET.push(n);
+    }
+    renderTicker();
+  } catch {}
 }
 function applyLive() {
   document.querySelectorAll("[data-lp]").forEach(e => { const s = byCode[e.dataset.lp]; if (s) e.textContent = money(s, s.price); });
@@ -938,7 +958,7 @@ document.addEventListener("input", e => {
   const age = (Date.now() - new Date(DATA_ASOF.replace(" ", "T"))) / 36e5;
   $("#asof").innerHTML = `${DATA_ASOF.slice(5)} 기준${age > 36 ? ` <b class="stale">· ${Math.floor(age / 24)}일 전 데이터</b>` : ""}`;
 })();
-$("#ticker").innerHTML = MARKET.map(m => `<div class="tk"><b>${m.name}</b><span class="v num">${m.value.toLocaleString("ko-KR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span><span class="c num ${ud(m.chg)}">${pc(m.chg, 2)}</span></div>`).join("");
+renderTicker();
 render();
 loadPerfSnaps();
 liveInit();

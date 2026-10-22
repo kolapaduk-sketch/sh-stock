@@ -458,14 +458,10 @@ def main():
     final = sorted(kr, key=lambda i: -i["mcap"]) + us
     print(f"선정: 국내 {len(kr)} (거래대금 부족 제외 {low_liq}) · 미국 {len(us)}")
 
-    market = []
-    for sym, nm in (("^KS11", "KOSPI"), ("^KQ11", "KOSDAQ"), ("^GSPC", "S&P500"), ("^IXIC", "NASDAQ"), ("KRW=X", "USD/KRW")):
-        try:
-            m, c, _ = chart(sym)
-            p = m["regularMarketPrice"]
-            market.append({"name": nm, "value": round(p, 2), "chg": round((p / c[-2] - 1) * 100, 2)})
-        except Exception as e:
-            errs.append(f"{nm}: {e}")
+    from market_index import fetch_indices  # 지수·환율: 네이버 공식 값 우선 (Yahoo 일봉 전일 종가 오류 회피)
+    market = fetch_indices()
+    if len(market) < 5:
+        errs.append(f"지수 일부 수집 실패: {[m['name'] for m in market]}")
 
     print("뉴스·공시 수집 중...")
     with ThreadPoolExecutor(max_workers=WORKERS) as ex:

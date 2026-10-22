@@ -22,7 +22,7 @@ KR_CODE = re.compile(r"^[0-9][0-9A-Z]{5}$")          # 국내 종목코드 (예:
 US_CODE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")      # 미국 티커 (예: NVDA, BRK-B)
 QUOTE_TTL, INTRA_TTL = 8, 45
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from market_index import fetch_indices                           # 초 — 같은 요청은 잠깐 재사용해 출처에 부담을 주지 않음
+from market_index import fetch_indices, fetch_market_flows                           # 초 — 같은 요청은 잠깐 재사용해 출처에 부담을 주지 않음
 
 _cache, _lock = {}, threading.Lock()
 pool = ThreadPoolExecutor(max_workers=8)
@@ -155,6 +155,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json({"time": time.strftime("%H:%M:%S"), "quotes": quotes(codes)})
             if u.path == "/api/indices":
                 return self.send_json({"time": time.strftime("%H:%M:%S"), "indices": cached("idx", 15, fetch_indices)})
+            if u.path == "/api/flows":
+                return self.send_json({"time": time.strftime("%H:%M:%S"), "flows": cached("flows", 50, fetch_market_flows)})
             if u.path == "/api/intraday":
                 code = q.get("code", [""])[0].upper()
                 return self.send_json(intraday(code))

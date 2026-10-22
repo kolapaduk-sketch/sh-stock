@@ -229,19 +229,25 @@ def _safe(fn):
 
 
 def naver_flow(code):
-    """최근 20거래일 외국인·기관 순매수 (네이버). 금액(억원) = 순매수 수량 × 당일 종가"""
+    """최근 20거래일 외국인·기관·개인 순매수 (네이버). 금액(억원) = 순매수 수량 × 당일 종가"""
     rows = get(f"https://m.stock.naver.com/api/stock/{code}/trend?pageSize=20")
     n = lambda v: float(str(v).replace(",", "").replace("+", "") or 0)
     f = [n(r["foreignerPureBuyQuant"]) * n(r["closePrice"]) / 1e8 for r in rows]
     o = [n(r["organPureBuyQuant"]) * n(r["closePrice"]) / 1e8 for r in rows]
-    streak = 0
-    for v in f:
-        if v == 0 or (streak and (v > 0) != (streak > 0)):
-            break
-        streak += 1 if v > 0 else -1
+    i = [n(r.get("individualPureBuyQuant")) * n(r["closePrice"]) / 1e8 for r in rows]
+
+    def streak_of(xs):  # 연속 순매수(+)/순매도(-) 일수
+        k = 0
+        for v in xs:
+            if v == 0 or (k and (v > 0) != (k > 0)):
+                break
+            k += 1 if v > 0 else -1
+        return k
+    streak = streak_of(f)
     return {"f1": round(f[0], 1), "f5": round(sum(f[:5]), 1), "f20": round(sum(f[:20]), 1),
             "o1": round(o[0], 1), "o5": round(sum(o[:5]), 1), "o20": round(sum(o[:20]), 1),
-            "fstreak": streak, "date": rows[0]["bizdate"] if rows else None}
+            "i1": round(i[0], 1), "i5": round(sum(i[:5]), 1),
+            "fstreak": streak, "ostreak": streak_of(o), "date": rows[0]["bizdate"] if rows else None}
 
 
 def price_stats(price, closes, highs=None, lows=None):
@@ -412,6 +418,25 @@ SNAP_KEYS = ["code", "name", "market", "sector", "cur", "price", "chg", "mcap", 
              "epsG", "revG", "r1m", "r3m", "r6m", "hi52", "lo52", "target", "rec", "nAnalyst", "vol", "div", "flow"]
 
 
+def save_flow_history(flows):
+    """시장 전체 투자자별 수급을 날짜별로 누적 (app/history/flows.js, 최근 250거래일)"""
+    hdir = APP / "history"
+    hdir.mkdir(exist_ok=True)
+    f = hdir / "flows.js"
+    hist = {}
+    if f.exists():
+        t = f.read_text(encoding="utf-8")
+        try:
+            hist = json.loads(t[t.index("= ") + 2:].rstrip().rstrip(";"))
+        except Exception:
+            hist = {}
+    for mk, v in flows.items():
+        if v.get("date"):
+            hist.setdefault(v["date"], {})[mk] = {k: v[k] for k in ("personal", "foreign", "institutional")}
+    keep = dict(sorted(hist.items())[-250:])
+    write_atomic(f, "// 자동 생성 — 일별 시장 수급(억원)\nconst FLOW_HISTORY = " + json.dumps(keep, ensure_ascii=False, separators=(",", ":")) + ";\n")
+
+
 def save_snapshot(final, market, asof):
     """추천 성과 추적용 일별 스냅샷 (열 단위 압축) — app/history/YYYY-MM-DD.js"""
     hdir = APP / "history"
@@ -458,8 +483,10 @@ def main():
     final = sorted(kr, key=lambda i: -i["mcap"]) + us
     print(f"선정: 국내 {len(kr)} (거래대금 부족 제외 {low_liq}) · 미국 {len(us)}")
 
-    from market_index import fetch_indices  # 지수·환율: 네이버 공식 값 우선 (Yahoo 일봉 전일 종가 오류 회피)
+    from market_index import fetch_indices, fetch_market_flows  # 지수·환율·시장 수급: 네이버 공식 값
     market = fetch_indices()
+    flows = fetch_market_flows()
+    save_flow_history(flows)
     if len(market) < 5:
         errs.append(f"지수 일부 수집 실패: {[m['name'] for m in market]}")
 
@@ -487,6 +514,7 @@ def main():
           f"// 출처: 네이버 증권·Yahoo Finance 공개 데이터 · 수집 {asof} · 국내 {len(kr)} / 미국 {len(us)}\n"
           f"const DATA_ASOF = {json.dumps(asof)};\nconst NEWS_ASOF = DATA_ASOF;\nconst USDKRW = {fx:.2f};\n"
           f"const MARKET = {json.dumps(market, ensure_ascii=False)};\n"
+          f"const FLOWS = {json.dumps(flows, ensure_ascii=False)};\n"
           f"const STOCKS = {json.dumps(final, ensure_ascii=False, separators=(',', ':'))};\n")
     write_atomic(OUT, js)
     print(f"저장: data.js {OUT.stat().st_size // 1024}KB · 상세 {len(keep)}개 · 뉴스 {sum(len(v['news']) for v in news.values())}건 · {time.time() - t0:.0f}초")

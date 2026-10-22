@@ -56,6 +56,26 @@ def fetch_indices():
     return [out[n] for n in order if n in out]
 
 
+def fetch_market_flows():
+    """시장 전체 투자자별 순매수(억원)·프로그램 매매·상승/하락 종목 수 — 코스피·코스닥 (네이버, 장중엔 잠정치)"""
+    out = {}
+    for mk in ("KOSPI", "KOSDAQ"):
+        try:
+            d = _get(f"https://m.stock.naver.com/api/index/{mk}/integration")
+        except Exception:
+            continue
+        t, p, u = d.get("dealTrendInfo") or {}, d.get("programTrendInfo") or {}, d.get("upDownStockInfo") or {}
+        out[mk] = {
+            "date": t.get("bizdate"),
+            "personal": num(t.get("personalValue")), "foreign": num(t.get("foreignValue")), "institutional": num(t.get("institutionalValue")),
+            "program": {"arb": num(p.get("indexDifferenceReal")), "nonarb": num(p.get("indexBiDifferenceReal")), "total": num(p.get("indexTotalReal"))},
+            "updown": {"upper": num(u.get("upperCount")), "up": num(u.get("riseCount")), "steady": num(u.get("steadyCount")),
+                       "down": num(u.get("fallCount")), "lower": num(u.get("lowerCount"))},
+        }
+    return out
+
+
 if __name__ == "__main__":
     for x in fetch_indices():
         print(x)
+    print(fetch_market_flows())

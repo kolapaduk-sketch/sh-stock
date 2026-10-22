@@ -836,6 +836,7 @@ async function liveTick() {
       liveTime = d.time;
       applyLive();
       liveIndices();
+      liveFlows();
       if (state.view === "buy" && state.period === "1D" && state.buy) loadIntraday(state.buy, true);
     } catch { liveTime = null; }
   }
@@ -852,6 +853,16 @@ async function liveIndices() {
       if (m && n.value != null) { m.value = n.value; m.chg = n.chg; } else if (!m && n.value != null) MARKET.push(n);
     }
     renderTicker();
+  } catch {}
+}
+let flowAt = 0;
+async function liveFlows() {
+  if (Date.now() - flowAt < 55000 || typeof FLOWS === "undefined") return;   // 시장 수급은 1분에 한 번
+  flowAt = Date.now();
+  try {
+    const d = await (await fetch("api/flows", { cache: "no-store" })).json();
+    for (const [mk, v] of Object.entries(d.flows || {})) if (v && v.personal != null) FLOWS[mk] = v;
+    document.querySelectorAll("[data-flowbox]").forEach(e => { const f = FLOWS[e.dataset.flowbox]; if (f) e.innerHTML = invBars(f); });
   } catch {}
 }
 function applyLive() {
@@ -888,8 +899,75 @@ async function refreshAll() {
   }
 }
 
+/* ── 오늘의 수급 (국내) ── */
+const won억 = v => v == null ? "-" : (v > 0 ? "+" : "") + Math.round(v).toLocaleString("ko-KR") + "억";
+const flowDate = d => d ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` : "-";
+function flowRank(mk, key, side, n = 10) {
+  const pool = STOCKS.filter(s => s.market === "KR" && s.flow && s.exch === mk && s.flow[key] != null);
+  const latest = pool.reduce((m, s) => s.flow.date > m ? s.flow.date : m, "");
+  return pool.filter(s => s.flow.date === latest && (side === "buy" ? s.flow[key] > 0 : s.flow[key] < 0))
+    .sort((a, b) => side === "buy" ? b.flow[key] - a.flow[key] : a.flow[key] - b.flow[key]).slice(0, n);
+}
+function rankRows(list, key, streakKey) {
+  if (!list.length) return `<div class="empty-note">해당 종목이 없습니다</div>`;
+  return list.map((s, i) => {
+    const st = s.flow[streakKey];
+    return `<div class="rk" data-act="buy" data-arg="${s.code}"><div class="rank">${i + 1}</div>
+      <div class="row-main"><b>${s.name}</b>${Math.abs(st) >= 2 ? `<i class="streak ${st > 0 ? "up" : "down"}">${Math.abs(st)}일 연속</i>` : ""}<span>${s.industry || s.sector} · <span data-lp="${s.code}">${money(s, s.price)}</span> <span class="${ud(s.chg)}" data-lc="${s.code}">${pc(s.chg)}</span></span></div>
+      <div class="amt"><b class="num ${ud(s.flow[key])}">${won억(s.flow[key])}</b><span class="num ${ud(key === "f1" ? s.flow.f5 : s.flow.o5)}">5일 ${won억(key === "f1" ? s.flow.f5 : s.flow.o5)}</span></div></div>`;
+  }).join("");
+}
+function invBars(f) {
+  const rows = [["개인", f.personal], ["외국인", f.foreign], ["기관", f.institutional]];
+  const max = Math.max(...rows.map(r => Math.abs(r[1] || 0)), 1);
+  return rows.map(([l, v]) => `<div class="inv"><span>${l}</span><div class="bar"><i class="${v >= 0 ? "pos" : "neg"}" style="width:${Math.abs(v || 0) / max * 50}%"></i></div><b class="num ${ud(v)}">${won억(v)}</b></div>`).join("");
+}
+function viewFlow() {
+  const mk = state.flowMkt || "KOSPI";
+  const F = typeof FLOWS !== "undefined" ? FLOWS[mk] : null;
+  const both = STOCKS.filter(s => s.market === "KR" && s.exch === mk && s.flow && s.flow.f1 > 0 && s.flow.o1 > 0)
+    .sort((a, b) => (b.flow.f1 + b.flow.o1) - (a.flow.f1 + a.flow.o1)).slice(0, 10);
+  const hist = typeof FLOW_HISTORY !== "undefined" ? Object.entries(FLOW_HISTORY).filter(([, v]) => v[mk]).slice(-10).reverse() : [];
+  const nK = STOCKS.filter(s => s.market === "KR" && s.exch === mk && s.flow).length;
+  const fs = state.fSide || "buy", os = state.oSide || "buy";
+  return `<div class="sec-title">오늘의 수급</div>
+  <div class="sec-sub">${F ? flowDate(F.date) : "-"} 기준 · 금액 단위 억원 · 장중에는 잠정치${LIVE ? " · 실시간 갱신 중" : ""}</div>
+  ${seg([["KOSPI", "코스피"], ["KOSDAQ", "코스닥"]], mk, "flowmkt")}
+  <div class="card" style="margin-top:12px">
+    <div class="card-h"><div class="card-t">투자자별 순매수</div><div class="card-s">${mk === "KOSPI" ? "코스피" : "코스닥"} 시장 전체</div></div>
+    <div data-flowbox="${mk}">${F ? invBars(F) : `<div class="empty-note">수급 데이터가 없습니다</div>`}</div>
+    ${F ? `<div class="mini-grid">
+      <div><span>프로그램 매매</span><b class="num">차익 <em class="${ud(F.program.arb)}" style="font-style:normal">${won억(F.program.arb)}</em><br>비차익 <em class="${ud(F.program.nonarb)}" style="font-style:normal">${won억(F.program.nonarb)}</em><br>합계 <em class="${ud(F.program.total)}" style="font-style:normal">${won억(F.program.total)}</em></b></div>
+      <div><span>상승 · 하락 종목</span><b class="num"><em class="up" style="font-style:normal">상승 ${F.updown.up}</em>${F.updown.upper ? ` (상한 ${F.updown.upper})` : ""}<br>보합 ${F.updown.steady}<br><em class="down" style="font-style:normal">하락 ${F.updown.down}</em>${F.updown.lower ? ` (하한 ${F.updown.lower})` : ""}</b></div>
+    </div>` : ""}
+  </div>
+  <div class="card">
+    <div class="card-h"><div class="card-t">외국인 ${fs === "buy" ? "순매수" : "순매도"} 상위</div><div class="card-s">당일 금액순</div></div>
+    ${seg([["buy", "순매수"], ["sell", "순매도"]], fs, "fside")}
+    <div style="margin-top:6px">${rankRows(flowRank(mk, "f1", fs), "f1", "fstreak")}</div>
+  </div>
+  <div class="card">
+    <div class="card-h"><div class="card-t">기관 ${os === "buy" ? "순매수" : "순매도"} 상위</div><div class="card-s">당일 금액순</div></div>
+    ${seg([["buy", "순매수"], ["sell", "순매도"]], os, "oside")}
+    <div style="margin-top:6px">${rankRows(flowRank(mk, "o1", os), "o1", "ostreak")}</div>
+  </div>
+  <div class="card">
+    <div class="card-h"><div class="card-t">외국인·기관 동반 순매수</div><div class="card-s">쌍끌이 · 합계순</div></div>
+    ${both.length ? both.map((s, i) => `<div class="rk" data-act="buy" data-arg="${s.code}"><div class="rank">${i + 1}</div>
+      <div class="row-main"><b>${s.name}</b><span>외국인 ${won억(s.flow.f1)} · 기관 ${won억(s.flow.o1)}</span></div>
+      <div class="amt"><b class="num up">${won억(s.flow.f1 + s.flow.o1)}</b><span class="num ${ud(s.chg)}" data-lc="${s.code}">${pc(s.chg)}</span></div></div>`).join("") : `<div class="empty-note">해당 종목이 없습니다</div>`}
+  </div>
+  <div class="card">
+    <div class="card-h"><div class="card-t">최근 시장 수급 추이</div><div class="card-s">${hist.length ? `기록 ${Object.keys(FLOW_HISTORY).length}일` : ""}</div></div>
+    ${hist.length ? `<div class="fh head"><span>날짜</span><span>개인</span><span>외국인</span><span>기관</span></div>` + hist.map(([d, v]) => `<div class="fh"><span>${d.slice(4, 6)}/${d.slice(6, 8)}</span><b class="num ${ud(v[mk].personal)}">${won억(v[mk].personal)}</b><b class="num ${ud(v[mk].foreign)}">${won억(v[mk].foreign)}</b><b class="num ${ud(v[mk].institutional)}">${won억(v[mk].institutional)}</b></div>`).join("")
+      : `<div class="empty-note">매일 자동 갱신 때마다 기록이 쌓입니다</div>`}
+  </div>
+  <p class="note" style="padding:0 4px">시장 전체 수급·프로그램 매매·상승/하락 수는 네이버 증권(거래소 집계) 값입니다. 순위는 SH STOCK 분석 대상 ${mk === "KOSPI" ? "코스피" : "코스닥"} ${nK}종목(시가총액 1,000억 원 이상) 안에서 계산했고, 종목별 금액은 순매수 수량 × 당일 종가 근사치입니다.</p>
+  ${disclaimer}`;
+}
+
 /* ── router / render ── */
-const VIEWS = { home: viewHome, buy: viewBuy, sell: viewSell, screen: viewScreener, my: viewMy };
+const VIEWS = { home: viewHome, buy: viewBuy, sell: viewSell, flow: viewFlow, screen: viewScreener, my: viewMy };
 function render() {
   $("#v-" + state.view).innerHTML = VIEWS[state.view]();
   for (const id of Object.keys(PICKERS)) bindSearch(id, PICKERS[id]);
@@ -919,6 +997,9 @@ const ACTIONS = {
   period: a => { state.period = a; render(); },
   mode: a => { state.mode = a; render(); },
   homemkt: a => { state.homeMkt = a; render(); },
+  flowmkt: a => { state.flowMkt = a; render(); },
+  fside: a => { state.fSide = a; render(); },
+  oside: a => { state.oSide = a; render(); },
   briefmkt: a => { state.briefMkt = a; render(); },
   altmkt: a => { state.altMkt = a; render(); },
   scrmkt: a => { state.scr.market = a; render(); },

@@ -86,6 +86,7 @@ async function copyText(t, msg) {
 
 /* ── components ── */
 function series(s, period) {
+  if (period === "1D") period = "1M";
   if (!s.hist) return [s.price, s.price];
   const len = Math.min({ "1M": 21, "3M": 63, "6M": 126, "1Y": 250 }[period], s.hist.length);
   const d = s.hist.slice(-len);
@@ -193,7 +194,7 @@ function stockRow(s, i) {
   return `<div class="row" data-act="buy" data-arg="${s.code}">
     ${i != null ? `<div class="rank">${i + 1}</div>` : ""}
     <div class="row-main"><b>${s.name}</b><span>${s.market === "US" ? "미국" : "국내"} · ${s.sector} · 시총 ${cap(s.mcap)} · PER ${perTxt(s)}</span></div>
-    <div class="row-r"><b class="num">${money(s, s.price)}</b><span class="num ${ud(s.chg)}">${pc(s.chg)}</span></div>
+    <div class="row-r"><b class="num" data-lp="${s.code}">${money(s, s.price)}</b><span class="num ${ud(s.chg)}" data-lc="${s.code}">${pc(s.chg)}</span></div>
     ${Engine.isThin(s) ? `<div class="sbadge thin" title="데이터 부족">부족</div>` : sbadge(Engine.score(s).total)}</div>`;
 }
 
@@ -226,7 +227,7 @@ function briefCard() {
       <div class="sec-card-h"><i>${i + 1}</i><b>${o.sector}</b>
         <span class="chipline"><em class="${ud(o.d1)}">전일 ${pc(o.d1)}</em><em class="${ud(o.m1)}">1개월 ${pc(o.m1)}</em><em>평균 ${o.sc.toFixed(0)}점</em></span></div>
       <ul>${o.why.map(w => `<li>${w}</li>`).join("")}</ul>
-      <div class="picks">${o.picks.map(s => `<div class="pick" data-act="buy" data-arg="${s.code}"><b>${s.name}</b><span class="num">${money(s, s.price)} <em class="${ud(s.chg)}">${pc(s.chg)}</em></span>${sbadge(Engine.score(s).total)}</div>`).join("")}</div>
+      <div class="picks">${o.picks.map(s => `<div class="pick" data-act="buy" data-arg="${s.code}"><b>${s.name}</b><span class="num"><i class="lp" data-lp="${s.code}">${money(s, s.price)}</i> <em class="${ud(s.chg)}" data-lc="${s.code}">${pc(s.chg)}</em></span>${sbadge(Engine.score(s).total)}</div>`).join("")}</div>
     </div>`).join("")}
     <p class="note" style="color:rgba(255,255,255,.55)">업종 선정: 전일 등락 25% · 상승 종목 비율 15% · 1개월 추세 20% · 평균 종합점수 40% (룰 기반, 투자 권유 아님)</p>
   </section>`;
@@ -264,18 +265,53 @@ function viewHome() {
 }
 
 /* ── 매수 분석 ── */
+function headPrice(s) {
+  const prev = s.price / (1 + s.chg / 100);
+  const live = LIVE && s.liveAt ? `<span class="live-tag ${s.liveStatus === "OPEN" ? "on" : ""}">${s.liveStatus === "OPEN" ? "실시간" : "장 마감"} ${s.liveAt.slice(11, 16)}</span>` : "";
+  return `<div class="price num ${ud(s.chg)}">${s.cur === "USD" ? "$" + s.price.toLocaleString("en-US", { minimumFractionDigits: 2 }) : won(s.price) + "<small>원</small>"}${live}</div>
+    <div class="pchg num ${ud(s.chg)}">${arrow(s.chg)} ${s.cur === "USD" ? "$" + Math.abs(s.price - prev).toFixed(2) : won(Math.abs(s.price - prev))} (${pc(s.chg, 2)}) <span class="flat" style="font-weight:500">${krwHint(s)}</span></div>`;
+}
+
+/* ── 오늘 분봉 차트 (실시간 서버 사용 시) ── */
+const INTRA = {};
+function loadIntraday(code, force) {
+  const it = INTRA[code];
+  if (it && (it.loading || (!force && Date.now() - it.at < 60000))) return;
+  INTRA[code] = { ...(it || {}), loading: true };
+  fetch("api/intraday?code=" + encodeURIComponent(code), { cache: "no-store" }).then(r => r.json()).then(d => {
+    INTRA[code] = { at: Date.now(), data: d.points ? d : { points: [] } };
+  }).catch(() => { INTRA[code] = { at: Date.now(), data: { points: [] } }; })
+    .then(() => { if (state.view === "buy" && state.buy === code && state.period === "1D") render(); });
+}
+function intradayChart(s) {
+  const it = INTRA[s.code];
+  if (!it || !it.data) { loadIntraday(s.code); return `<div class="chart chart-loading">오늘 시세 불러오는 중…</div>`; }
+  const pts = it.data.points || [];
+  if (pts.length < 2) return `<div class="chart chart-loading">오늘 분봉 데이터가 없습니다 (장 시작 전이거나 휴장)</div>`;
+  const d = pts.map(p => p[1]), prev = it.data.prev || s.price / (1 + s.chg / 100);
+  const lo = Math.min(...d, prev), hi = Math.max(...d, prev), W = 400, H = 150, pad = 8;
+  const X = i => (i / (d.length - 1)) * W, Y = v => pad + (1 - (v - lo) / (hi - lo || 1)) * (H - pad * 2);
+  const line = d.map((v, i) => `${i ? "L" : "M"}${X(i).toFixed(1)},${Y(v).toFixed(1)}`).join("");
+  const col = d[d.length - 1] >= prev ? "#E5322D" : "#1E64D8", yb = Y(prev).toFixed(1);
+  return `<div class="chart"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+      <defs><linearGradient id="gi" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${col}" stop-opacity=".18"/><stop offset="1" stop-color="${col}" stop-opacity="0"/></linearGradient></defs>
+      <line x1="0" x2="${W}" y1="${yb}" y2="${yb}" stroke="#C3CBD6" stroke-dasharray="3 4" vector-effect="non-scaling-stroke"/>
+      <path d="${line}L${W},${H}L0,${H}Z" fill="url(#gi)"/>
+      <path d="${line}" fill="none" stroke="${col}" stroke-width="2" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg></div>
+    <div class="chart-foot num"><span>${pts[0][0]} ~ ${pts[pts.length - 1][0]}${s.market === "US" ? " (한국시간)" : ""} · 점선 = 전일 종가</span><span>고가 ${money(s, Math.max(...d))} · 저가 ${money(s, Math.min(...d))}</span></div>`;
+}
+
 function stockHead(s) {
-  const c = s.hist ? chartSVG(s, state.period) : null, on = state.watch.has(s.code), prev = s.price / (1 + s.chg / 100);
+  const c = s.hist && state.period !== "1D" ? chartSVG(s, state.period) : null, on = state.watch.has(s.code);
   return `<div class="card">
     <div class="sh"><div><div class="sh-name">${s.name}</div>
       <div class="sh-meta"><span>${s.code}</span>${mktBadge(s)}<span class="badge">${s.exch}</span><span class="badge">${s.sector}</span>${riskBadge(s)}</div>
       <div class="sh-sub">${esc(s.en)}${s.industry ? " · " + s.industry : ""}</div>
       ${evChips(s)}</div>
       <button class="star noprint ${on ? "on" : ""}" data-act="star" data-arg="${s.code}" aria-label="관심종목"><svg width="18" height="18" viewBox="0 0 24 24" fill="${on ? "currentColor" : "none"}" stroke="currentColor" stroke-width="2" stroke-linejoin="round">${ICON.star}</svg></button></div>
-    <div class="price num ${ud(s.chg)}">${s.cur === "USD" ? "$" + s.price.toLocaleString("en-US", { minimumFractionDigits: 2 }) : won(s.price) + "<small>원</small>"}</div>
-    <div class="pchg num ${ud(s.chg)}">${arrow(s.chg)} ${s.cur === "USD" ? "$" + Math.abs(s.price - prev).toFixed(2) : won(Math.abs(s.price - prev))} (${pc(s.chg, 2)}) <span class="flat" style="font-weight:500">${krwHint(s)}</span></div>
-    <div style="margin-top:14px" class="noprint">${seg([["1M", "1개월"], ["3M", "3개월"], ["6M", "6개월"], ["1Y", "1년"]], state.period, "period")}</div>
-    ${c ? `<div class="chart">${c.svg}</div>
+    <div data-lph="${s.code}">${headPrice(s)}</div>
+    <div style="margin-top:14px" class="noprint">${seg((LIVE ? [["1D", "오늘"]] : []).concat([["1M", "1개월"], ["3M", "3개월"], ["6M", "6개월"], ["1Y", "1년"]]), state.period, "period")}</div>
+    ${state.period === "1D" ? intradayChart(s) : c ? `<div class="chart">${c.svg}</div>
     <div class="ma-legend"><span><i style="background:${c.r >= 0 ? "#E5322D" : "#1E64D8"}"></i>주가</span>${[20, 60, 120].map(n => `<span><i style="background:${MA_COLORS[n]}"></i>${n}일선</span>`).join("")}</div>
     <div class="chart-foot num"><span>기간 수익률 <b class="${ud(c.r)}">${pc(c.r)}</b></span><span>최고 ${money(s, Math.max(...series(s, state.period)))} · 최저 ${money(s, Math.min(...series(s, state.period)))}</span></div>`
       : `<div class="chart chart-loading">차트 불러오는 중…</div>`}
@@ -400,7 +436,7 @@ function viewSell() {
     const perF = v => v > 0 ? v.toFixed(1) : "적자";
     h += `<div class="alt ${i === 0 ? "top" : ""}" data-act="buy" data-arg="${t.code}">
       <div class="alt-h"><div class="alt-rank">${i + 1}</div>
-        <div class="row-main"><b>${t.name}</b><span>${t.market === "US" ? "미국" : "국내"} · ${t.industry || t.sector} · ${money(t, t.price)} <span class="${ud(t.chg)}">${pc(t.chg)}</span></span></div>
+        <div class="row-main"><b>${t.name}</b><span>${t.market === "US" ? "미국" : "국내"} · ${t.industry || t.sector} · <span data-lp="${t.code}">${money(t, t.price)}</span> <span class="${ud(t.chg)}" data-lc="${t.code}">${pc(t.chg)}</span></span></div>
         ${sbadge(a.sc.total)}</div>
       <div class="alt-tags">
         <span class="tag ${a.delta < 0 ? "n" : ""}">매도 종목 대비 ${a.delta >= 0 ? "+" : ""}${a.delta}점</span>
@@ -763,6 +799,51 @@ function summaryText(s) {
   return L.filter((l, i) => l !== "" || L[i - 1] !== "").join("\n");
 }
 
+/* ── 실시간 시세 (tools/live_server.py 로 열었을 때만 동작) ── */
+let LIVE = false, liveTime = null;
+async function liveInit() {
+  try {
+    const r = await fetch("api/ping", { cache: "no-store" });
+    if (!r.ok || !(await r.json()).ok) return;
+  } catch { return; }
+  LIVE = true;
+  render();
+  liveTick();
+  setInterval(() => { if (!document.hidden) liveTick(); }, 15000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) liveTick(); });
+}
+async function liveTick() {
+  const codes = new Set();
+  document.querySelectorAll(`#v-${state.view} [data-lp], #v-${state.view} [data-lph]`).forEach(e => codes.add(e.dataset.lp || e.dataset.lph));
+  if (state.view === "sell" && state.sell) codes.add(state.sell);
+  const list = [...codes].filter(c => byCode[c]).slice(0, 100);
+  if (list.length) {
+    try {
+      const d = await (await fetch("api/quotes?codes=" + encodeURIComponent(list.join(",")), { cache: "no-store" })).json();
+      for (const [c, q] of Object.entries(d.quotes || {})) {
+        const s = byCode[c];
+        if (!s || q.price == null) continue;
+        s.price = q.price;
+        if (q.chg != null) s.chg = q.chg;
+        s.liveAt = q.time; s.liveStatus = q.status;
+      }
+      liveTime = d.time;
+      applyLive();
+      if (state.view === "buy" && state.period === "1D" && state.buy) loadIntraday(state.buy, true);
+    } catch { liveTime = null; }
+  }
+  liveBadge();
+}
+function applyLive() {
+  document.querySelectorAll("[data-lp]").forEach(e => { const s = byCode[e.dataset.lp]; if (s) e.textContent = money(s, s.price); });
+  document.querySelectorAll("[data-lc]").forEach(e => { const s = byCode[e.dataset.lc]; if (!s) return; e.textContent = pc(s.chg); e.classList.remove("up", "down", "flat"); e.classList.add(ud(s.chg)); });
+  document.querySelectorAll("[data-lph]").forEach(e => { const s = byCode[e.dataset.lph]; if (s) e.innerHTML = headPrice(s); });
+}
+function liveBadge() {
+  const el = $("#asof");
+  el.innerHTML = `${liveTime ? `<b class="live-dot">● 실시간 ${liveTime}</b>` : `<b class="stale">시세 연결 끊김</b>`}<br>점수 ${DATA_ASOF.slice(5)} 기준`;
+}
+
 /* ── router / render ── */
 const VIEWS = { home: viewHome, buy: viewBuy, sell: viewSell, screen: viewScreener, my: viewMy };
 function render() {
@@ -770,6 +851,7 @@ function render() {
   for (const id of Object.keys(PICKERS)) bindSearch(id, PICKERS[id]);
   if (state.view === "screen") renderScreenerResults();
   ensureDetails();
+  if (LIVE) { applyLive(); clearTimeout(window._liveSoon); window._liveSoon = setTimeout(liveTick, 300); }
   const tray = $("#tray");
   tray.innerHTML = state.cmp.length && state.view !== "my" ? `<button data-act="myt" data-arg="cmp">${ic("cmp", 16)} 비교함 ${state.cmp.length}/4 · 비교하기 ›</button>` : "";
 }
@@ -834,3 +916,4 @@ document.addEventListener("input", e => {
 $("#ticker").innerHTML = MARKET.map(m => `<div class="tk"><b>${m.name}</b><span class="v num">${m.value.toLocaleString("ko-KR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span><span class="c num ${ud(m.chg)}">${pc(m.chg, 2)}</span></div>`).join("");
 render();
 loadPerfSnaps();
+liveInit();

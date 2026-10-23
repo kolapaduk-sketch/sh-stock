@@ -31,6 +31,18 @@ def fetch_indices():
                                   "status": x.get("marketStatus"), "time": (x.get("localTradedAt") or "")[:16], "src": "네이버"}
     except Exception:
         pass
+    # 개장 전(PREOPEN)에는 네이버가 등락률을 0으로 초기화 → 전일 종가·등락률을 일별 시세에서 가져와 표시
+    for mk in ("KOSPI", "KOSDAQ"):
+        v = out.get(mk)
+        if v and v.get("status") == "PREOPEN" and not v.get("chg"):
+            try:
+                import datetime
+                today = (datetime.datetime.utcnow() + datetime.timedelta(hours=9)).strftime("%Y-%m-%d")
+                rows = _get(f"https://m.stock.naver.com/api/index/{mk}/price?pageSize=3&page=1")
+                row = next(r for r in rows if r["localTradedAt"] < today)  # 오늘 이전 마지막 거래일
+                v.update(value=num(row["closePrice"]), chg=num(row["fluctuationsRatio"]), time=row["localTradedAt"], prevDay=True)
+            except Exception:
+                pass
     try:
         names = {".INX": "S&P500", ".IXIC": "NASDAQ"}
         for x in _get("https://polling.finance.naver.com/api/realtime/worldstock/index/.INX,.IXIC").get("datas") or []:

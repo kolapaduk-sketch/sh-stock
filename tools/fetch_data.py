@@ -12,7 +12,7 @@ SH STOCK 데이터 수집기
    app/history/<날짜>.js   추천 성과 추적용 일별 스냅샷
 외부 패키지 없이 표준 라이브러리만 사용.
 """
-import json, math, time, random, statistics, datetime, html, re, http.cookiejar, urllib.request, urllib.parse
+import os, json, math, time, random, statistics, datetime, html, re, http.cookiejar, urllib.request, urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -486,7 +486,9 @@ def main():
     from market_index import fetch_indices, fetch_market_flows  # 지수·환율·시장 수급: 네이버 공식 값
     market = fetch_indices()
     flows = fetch_market_flows()
-    save_flow_history(flows)
+    KEEP_HISTORY = os.environ.get("GITHUB_ACTIONS") == "true" or os.environ.get("SH_KEEP_HISTORY") == "1"
+    if KEEP_HISTORY:
+        save_flow_history(flows)
     if len(market) < 5:
         errs.append(f"지수 일부 수집 실패: {[m['name'] for m in market]}")
 
@@ -518,7 +520,8 @@ def main():
           f"const STOCKS = {json.dumps(final, ensure_ascii=False, separators=(',', ':'))};\n")
     write_atomic(OUT, js)
     print(f"저장: data.js {OUT.stat().st_size // 1024}KB · 상세 {len(keep)}개 · 뉴스 {sum(len(v['news']) for v in news.values())}건 · {time.time() - t0:.0f}초")
-    save_snapshot(final, market, asof)
+    if KEEP_HISTORY:  # 추천 성과·수급 기록은 클라우드가 원본 (PC는 받아서 보기만)
+        save_snapshot(final, market, asof)
     old_news = APP / "news.js"
     if old_news.exists():
         old_news.unlink()  # 이전 버전의 통합 뉴스 파일 (이제 종목별 상세 파일에 포함)

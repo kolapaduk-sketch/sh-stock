@@ -1,5 +1,5 @@
 // SH STOCK 서비스워커 — 앱 화면은 캐시해 빠르게 열고, 데이터는 항상 최신본을 먼저 시도(실패 시 마지막 캐시로 오프라인 표시)
-const CACHE = "sh-stock-v2";
+const CACHE = "sh-stock-v3";
 const SHELL = ["./", "index.html", "styles.css", "engine.js", "app.js", "manifest.webmanifest", "icons/icon-192.png", "icons/icon-512.png"];
 const DATA = /\/(data|news|verify)\.js$/;
 

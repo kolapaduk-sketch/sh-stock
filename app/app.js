@@ -822,7 +822,8 @@ async function liveTick() {
   const codes = new Set();
   document.querySelectorAll(`#v-${state.view} [data-lp], #v-${state.view} [data-lph]`).forEach(e => codes.add(e.dataset.lp || e.dataset.lph));
   if (state.view === "sell" && state.sell) codes.add(state.sell);
-  const list = [...codes].filter(c => byCode[c]).slice(0, 100);
+  let list = [...codes].filter(c => byCode[c]).slice(0, 100);
+  if (hmOn()) list = [...new Set(list.concat(hmPool().map(s => s.code)))];   // 히트맵: 국내 전 종목
   if (list.length) {
     try {
       const d = await (await fetch("api/quotes?codes=" + encodeURIComponent(list.join(",")), { cache: "no-store" })).json();
@@ -835,6 +836,7 @@ async function liveTick() {
       }
       liveTime = d.time;
       applyLive();
+      if (hmOn()) updateHeatmap();
       liveIndices();
       liveFlows();
       if (state.view === "buy" && state.period === "1D" && state.buy) loadIntraday(state.buy, true);
@@ -899,6 +901,115 @@ async function refreshAll() {
   }
 }
 
+/* ── 국내 히트맵 (시가총액 크기 · 등락률 색) ── */
+// squarified treemap: items [{v,...}] 를 (x,y,w,h) 사각형에 배치
+function squarify(items, x, y, w, h) {
+  const out = [], total = items.reduce((a, b) => a + b.v, 0);
+  if (!total || w <= 0 || h <= 0) return out;
+  const scale = w * h / total;
+  const rest = items.map(it => ({ it, a: it.v * scale }));
+  let row = [];
+  const worst = (r, side) => {
+    const s = r.reduce((a, b) => a + b.a, 0); let mx = 0, mn = Infinity;
+    for (const q of r) { mx = Math.max(mx, q.a); mn = Math.min(mn, q.a); }
+    return Math.max(side * side * mx / (s * s), (s * s) / (side * side * mn));
+  };
+  const lay = r => {
+    const s = r.reduce((a, b) => a + b.a, 0);
+    if (w >= h) { const cw = s / h; let cy = y; for (const q of r) { const ch = q.a / cw; out.push({ ...q.it, x, y: cy, w: cw, h: ch }); cy += ch; } x += cw; w -= cw; }
+    else { const ch = s / w; let cx = x; for (const q of r) { const cw = q.a / ch; out.push({ ...q.it, x: cx, y, w: cw, h: ch }); cx += cw; } y += ch; h -= ch; }
+  };
+  while (rest.length) {
+    const side = Math.min(w, h), q = rest[0];
+    if (!row.length || worst(row.concat(q), side) <= worst(row, side)) { row.push(q); rest.shift(); }
+    else { lay(row); row = []; }
+  }
+  if (row.length) lay(row);
+  return out;
+}
+const HM_RANGE = 3;   // ±3% 이상이면 가장 진한 색
+function hmColor(chg) {
+  const base = [58, 69, 86];
+  if (chg == null || !chg) return `rgb(${base.join(",")})`;
+  const t = Math.min(Math.abs(chg) / HM_RANGE, 1), to = chg > 0 ? [229, 50, 45] : [30, 100, 216];
+  return `rgb(${base.map((b, i) => Math.round(b + (to[i] - b) * t)).join(",")})`;
+}
+function hmPool() {
+  const mk = state.hmMkt || "all";
+  return STOCKS.filter(s => s.market === "KR" && s.mcap > 0 && (mk === "all" || s.exch === mk));
+}
+function hmStats(pool) {
+  const up = pool.filter(s => s.chg > 0).length, dn = pool.filter(s => s.chg < 0).length;
+  const capSum = pool.reduce((a, s) => a + s.mcap, 0);
+  const avg = capSum ? pool.reduce((a, s) => a + s.mcap * (s.chg || 0), 0) / capSum : 0;
+  return { up, dn, flat: pool.length - up - dn, avg };
+}
+function hmSectors(pool) {
+  const g = {};
+  for (const s of pool) (g[s.sector || "기타"] = g[s.sector || "기타"] || []).push(s);
+  return Object.entries(g).map(([name, list]) => {
+    const v = list.reduce((a, s) => a + s.mcap, 0);
+    return { name, v, list: list.sort((a, b) => b.mcap - a.mcap), chg: list.reduce((a, s) => a + s.mcap * (s.chg || 0), 0) / v };
+  }).sort((a, b) => b.v - a.v);
+}
+const hmWhen = () => LIVE ? (liveTime ? `● 실시간 ${liveTime} · 15초마다 자동 갱신` : "실시간 시세 불러오는 중…") : `${DATA_ASOF.slice(5)} 수집 기준 · 실시간은 PC에서 'SH STOCK 실시간' 실행 시`;
+function viewHeatmap() {
+  const mk = state.hmMkt || "all", pool = hmPool();
+  return `<div class="sec-title">국내 증시 히트맵</div>
+  <div class="sec-sub" id="hm-when">${hmWhen()}</div>
+  ${seg([["all", "전체"], ["KOSPI", "코스피"], ["KOSDAQ", "코스닥"]], mk, "hmmkt")}
+  <div class="hm-sum" id="hm-sum">${hmSumHtml(hmStats(pool))}</div>
+  <div class="hm-box" id="hm"></div>
+  <div class="hm-legend"><span>-${HM_RANGE}%</span><i style="background:linear-gradient(90deg,${hmColor(-HM_RANGE)},${hmColor(0)},${hmColor(HM_RANGE)})"></i><span>+${HM_RANGE}%</span></div>
+  <div class="card" style="margin-top:12px">
+    <div class="card-h"><div class="card-t">업종별 등락</div><div class="card-s">시가총액 가중 평균</div></div>
+    <div id="hm-sec">${hmSecHtml(pool)}</div>
+  </div>
+  <p class="note" style="padding:0 4px">사각형 크기는 시가총액, 색은 당일 등락률입니다(빨강 상승 · 파랑 하락). SH STOCK 분석 대상 국내 ${pool.length}종목(시가총액 1,000억 원 이상) 기준이라 시장 전체 지수와 다를 수 있습니다. 칸을 누르면 종목 분석으로 이동합니다.</p>
+  ${disclaimer}`;
+}
+const hmSumHtml = st => `<div><span>시총가중 평균</span><b class="num ${ud(st.avg)}">${pc(st.avg, 2)}</b></div>
+  <div><span>상승</span><b class="num up">${st.up}</b></div><div><span>보합</span><b class="num">${st.flat}</b></div><div><span>하락</span><b class="num down">${st.dn}</b></div>`;
+function hmSecHtml(pool) {
+  const secs = hmSectors(pool), mx = Math.max(...secs.map(g => Math.abs(g.chg)), 0.5);
+  return secs.map(g => `<div class="inv"><span>${esc(g.name)}</span><div class="bar"><i class="${g.chg >= 0 ? "pos" : "neg"}" style="width:${Math.abs(g.chg) / mx * 50}%"></i></div><b class="num ${ud(g.chg)}">${pc(g.chg, 2)}</b></div>`).join("");
+}
+function drawHeatmap() {
+  const box = document.getElementById("hm");
+  if (!box) return;
+  const W = box.clientWidth, H = Math.round(Math.min(Math.max(W * 1.45, 420), 720));
+  box.style.height = H + "px";
+  let html = "";
+  for (const g of squarify(hmSectors(hmPool()), 0, 0, W, H)) {
+    const head = g.w > 44 && g.h > 40 ? 15 : 0;
+    html += `<div class="hm-sec" style="left:${g.x}px;top:${g.y}px;width:${g.w}px;height:${g.h}px">${head ? `<em>${esc(g.name)}</em>` : ""}</div>`;
+    for (const t of squarify(g.list.map(s => ({ v: s.mcap, s })), g.x + 1, g.y + 1 + head, g.w - 2, g.h - 2 - head)) {
+      // 글자 크기: 칸 면적과 이름 길이에 맞춤, 8px 미만이면 이름 생략(누르거나 마우스를 올리면 확인)
+      const s = t.s, fs = Math.min(16, Math.sqrt(t.w * t.h) / 4.3, (t.w - 4) / Math.min(s.name.length * 0.95, 4), t.h / 2.4), big = fs >= 8;
+      html += `<div class="hm-t" data-act="buy" data-arg="${s.code}" data-hm="${s.code}" title="${esc(s.name)} ${pc(s.chg, 2)}" style="left:${t.x}px;top:${t.y}px;width:${t.w}px;height:${t.h}px;background:${hmColor(s.chg)};font-size:${fs.toFixed(1)}px">${big ? `<b>${esc(s.name)}</b>${t.h >= fs * 2.6 ? `<span>${pc(s.chg, 2)}</span>` : ""}` : ""}</div>`;
+    }
+  }
+  box.innerHTML = html;
+}
+// 실시간 시세가 들어오면 배치는 그대로 두고 색·숫자만 바꾼다 (화면이 흔들리지 않게)
+function updateHeatmap() {
+  const box = document.getElementById("hm");
+  if (!box) return;
+  box.querySelectorAll("[data-hm]").forEach(e => {
+    const s = byCode[e.dataset.hm];
+    e.style.background = hmColor(s.chg);
+    e.title = `${s.name} ${pc(s.chg, 2)}`;
+    const sp = e.querySelector("span"); if (sp) sp.textContent = pc(s.chg, 2);
+  });
+  const pool = hmPool();
+  $("#hm-sum").innerHTML = hmSumHtml(hmStats(pool));
+  $("#hm-sec").innerHTML = hmSecHtml(pool);
+  $("#hm-when").textContent = hmWhen();
+}
+const hmOn = () => state.view === "flow" && (state.flowTab || "map") === "map";
+let hmW = 0;
+window.addEventListener("resize", () => { const b = document.getElementById("hm"); if (hmOn() && b && b.clientWidth !== hmW) { hmW = b.clientWidth; drawHeatmap(); } });
+
 /* ── 오늘의 수급 (국내) ── */
 const won억 = v => v == null ? "-" : (v > 0 ? "+" : "") + Math.round(v).toLocaleString("ko-KR") + "억";
 const flowDate = d => d ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` : "-";
@@ -921,6 +1032,10 @@ function invBars(f) {
   const rows = [["개인", f.personal], ["외국인", f.foreign], ["기관", f.institutional]];
   const max = Math.max(...rows.map(r => Math.abs(r[1] || 0)), 1);
   return rows.map(([l, v]) => `<div class="inv"><span>${l}</span><div class="bar"><i class="${v >= 0 ? "pos" : "neg"}" style="width:${Math.abs(v || 0) / max * 50}%"></i></div><b class="num ${ud(v)}">${won억(v)}</b></div>`).join("");
+}
+function viewMarket() {
+  const tab = state.flowTab || "map";
+  return `<div style="margin-bottom:12px">${seg([["map", "히트맵"], ["flow", "수급"]], tab, "flowtab", "seg-navy")}</div>` + (tab === "map" ? viewHeatmap() : viewFlow());
 }
 function viewFlow() {
   const mk = state.flowMkt || "KOSPI";
@@ -967,11 +1082,12 @@ function viewFlow() {
 }
 
 /* ── router / render ── */
-const VIEWS = { home: viewHome, buy: viewBuy, sell: viewSell, flow: viewFlow, screen: viewScreener, my: viewMy };
+const VIEWS = { home: viewHome, buy: viewBuy, sell: viewSell, flow: viewMarket, screen: viewScreener, my: viewMy };
 function render() {
   $("#v-" + state.view).innerHTML = VIEWS[state.view]();
   for (const id of Object.keys(PICKERS)) bindSearch(id, PICKERS[id]);
   if (state.view === "screen") renderScreenerResults();
+  if (hmOn()) { drawHeatmap(); hmW = ($("#hm") || {}).clientWidth || 0; }
   ensureDetails();
   if (LIVE) { applyLive(); clearTimeout(window._liveSoon); window._liveSoon = setTimeout(liveTick, 300); }
   const tray = $("#tray");
@@ -998,6 +1114,8 @@ const ACTIONS = {
   mode: a => { state.mode = a; render(); },
   homemkt: a => { state.homeMkt = a; render(); },
   flowmkt: a => { state.flowMkt = a; render(); },
+  flowtab: a => { state.flowTab = a; render(); },
+  hmmkt: a => { state.hmMkt = a; render(); },
   fside: a => { state.fSide = a; render(); },
   oside: a => { state.oSide = a; render(); },
   briefmkt: a => { state.briefMkt = a; render(); },

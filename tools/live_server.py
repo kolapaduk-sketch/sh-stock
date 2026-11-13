@@ -50,15 +50,24 @@ num = lambda v: None if v in (None, "", "-", "N/A") else float(str(v).replace(",
 
 
 # ── 현재가 ──────────────────────────────────────────
-def kr_quotes(codes):
+def kr_chunk(chunk):
     out = {}
-    for i in range(0, len(codes), 40):
-        chunk = codes[i:i + 40]
+    try:
         d = get("https://polling.finance.naver.com/api/realtime/domestic/stock/" + ",".join(chunk))
-        for x in d.get("datas") or []:
-            out[x["itemCode"]] = {"price": num(x.get("closePrice")), "chg": num(x.get("fluctuationsRatio")),
-                                  "diff": num(x.get("compareToPreviousClosePrice")), "status": x.get("marketStatus"),
-                                  "time": (x.get("localTradedAt") or "")[:19]}
+    except Exception:
+        return out
+    for x in d.get("datas") or []:
+        out[x["itemCode"]] = {"price": num(x.get("closePrice")), "chg": num(x.get("fluctuationsRatio")),
+                              "diff": num(x.get("compareToPreviousClosePrice")), "status": x.get("marketStatus"),
+                              "time": (x.get("localTradedAt") or "")[:19]}
+    return out
+
+
+def kr_quotes(codes):
+    # 40종목씩 나눠 동시에 요청 (히트맵은 국내 전 종목 ~850개를 한 번에 받음)
+    out = {}
+    for part in pool.map(kr_chunk, [codes[i:i + 40] for i in range(0, len(codes), 40)]):
+        out.update(part)
     return out
 
 
@@ -151,7 +160,7 @@ class Handler(SimpleHTTPRequestHandler):
             if u.path == "/api/ping":
                 return self.send_json({"ok": True, "time": time.strftime("%Y-%m-%d %H:%M:%S")})
             if u.path == "/api/quotes":
-                codes = [c for c in (q.get("codes", [""])[0].upper().split(",")) if c and (KR_CODE.match(c) or US_CODE.match(c))][:120]
+                codes = [c for c in (q.get("codes", [""])[0].upper().split(",")) if c and (KR_CODE.match(c) or US_CODE.match(c))][:1200]
                 return self.send_json({"time": time.strftime("%H:%M:%S"), "quotes": quotes(codes)})
             if u.path == "/api/indices":
                 return self.send_json({"time": time.strftime("%H:%M:%S"), "indices": cached("idx", 15, fetch_indices)})
